@@ -1,0 +1,28 @@
+[
+  {
+    "id": "review-alert-001",
+    "camera": "Camera_Beta",
+    "start_time": 1700000000.25,
+    "end_time": 1700000018.75,
+    "severity": "alert",
+    "thumb_path": "/media/frigate/clips/review/sanitized-alert.webp",
+    "has_been_reviewed": false,
+    "data": {
+      "objects": ["person"],
+      "audio": ["speech"],
+      "zones": ["zone_one"]
+    }
+  },
+  {
+    "id": "review-detection-002",
+    "camera": "Camera_Epsilon",
+    "start_time": 1700000100.0,
+    "end_time": null,
+    "severity": "detection",
+    "has_been_reviewed": true,
+    "data": {
+      "objects": ["bird"],
+      "zones": ["zone_two"]
+    }
+  }
+]

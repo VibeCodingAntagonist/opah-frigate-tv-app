@@ -1,0 +1,227 @@
+name: Publish signed APK
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable SemVer to build without publishing a release
+        required: true
+        default: "0.2.0"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opah-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Verify and sign
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      apk_name: ${{ steps.version.outputs.apk }}
+      release_version: ${{ steps.version.outputs.name }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify public tree
+        shell: pwsh
+        run: ./tools/verify-public-tree.ps1
+
+      - name: Set up Java 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4
+
+      - name: Install Android API 36
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@4733eaac7c1b0da527e4206b7671e0061de1ce37 # v6
+        with:
+          cache-provider: basic
+
+      - name: Make the Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Validate tag and derive Android version
+        id: version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            candidate="${REQUESTED_VERSION}"
+          else
+            candidate="${GITHUB_REF_NAME#v}"
+          fi
+          if [[ ! "${candidate}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Release versions must use stable SemVer: MAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          major="${BASH_REMATCH[1]}"
+          minor="${BASH_REMATCH[2]}"
+          patch="${BASH_REMATCH[3]}"
+          if (( minor > 999 || patch > 999 )); then
+            echo "MINOR and PATCH must each be at most 999." >&2
+            exit 1
+          fi
+          version_code=$((major * 1000000 + minor * 1000 + patch))
+          if (( version_code < 1 || version_code > 2100000000 )); then
+            echo "Derived Android versionCode is outside the supported range." >&2
+            exit 1
+          fi
+          echo "name=${major}.${minor}.${patch}" >> "${GITHUB_OUTPUT}"
+          echo "code=${version_code}" >> "${GITHUB_OUTPUT}"
+          echo "apk=opah-v${major}.${minor}.${patch}.apk" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate signing secrets
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.OPAH_RELEASE_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.OPAH_RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.OPAH_RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.OPAH_RELEASE_KEY_PASSWORD }}
+          CERT_SHA256: ${{ secrets.OPAH_RELEASE_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in KEYSTORE_BASE64 STORE_PASSWORD KEY_ALIAS KEY_PASSWORD CERT_SHA256; do
+            if [[ -z "${!name:-}" ]]; then missing+=("${name}"); fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "Missing release secrets: ${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Decode release keystore
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.OPAH_RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > "${RUNNER_TEMP}/opah-release.jks"
+
+      - name: Verify and build signed release
+        env:
+          OPAH_RELEASE_KEYSTORE_FILE: ${{ runner.temp }}/opah-release.jks
+          OPAH_RELEASE_STORE_PASSWORD: ${{ secrets.OPAH_RELEASE_STORE_PASSWORD }}
+          OPAH_RELEASE_KEY_ALIAS: ${{ secrets.OPAH_RELEASE_KEY_ALIAS }}
+          OPAH_RELEASE_KEY_PASSWORD: ${{ secrets.OPAH_RELEASE_KEY_PASSWORD }}
+        run: >-
+          ./gradlew --no-daemon clean testDebugUnitTest lintDebug assembleRelease
+          -Popah.requireReleaseSigning=true
+          -Popah.versionName=${{ steps.version.outputs.name }}
+          -Popah.versionCode=${{ steps.version.outputs.code }}
+
+      - name: Verify APK identity and signer
+        id: artifact
+        shell: bash
+        env:
+          EXPECTED_CERT_SHA256: ${{ secrets.OPAH_RELEASE_CERT_SHA256 }}
+          EXPECTED_VERSION_NAME: ${{ steps.version.outputs.name }}
+          EXPECTED_VERSION_CODE: ${{ steps.version.outputs.code }}
+          RELEASE_APK_NAME: ${{ steps.version.outputs.apk }}
+          RELEASE_NOTES_PATH: docs/releases/v${{ steps.version.outputs.name }}.md
+        run: |
+          set -euo pipefail
+          source_apk="app/build/outputs/apk/release/app-release.apk"
+          build_tools="${ANDROID_HOME}/build-tools/36.0.0"
+          test -f "${source_apk}"
+          test -f "${RELEASE_NOTES_PATH}"
+
+          badging="$(${build_tools}/aapt dump badging "${source_apk}" | head -n 1)"
+          [[ "${badging}" == *"name='app.opah.tv'"* ]]
+          [[ "${badging}" == *"versionCode='${EXPECTED_VERSION_CODE}'"* ]]
+          [[ "${badging}" == *"versionName='${EXPECTED_VERSION_NAME}'"* ]]
+
+          verify_output="$("${build_tools}/apksigner" verify --verbose --print-certs "${source_apk}")"
+          printf '%s\n' "${verify_output}"
+          if ! grep -Fq 'Verified using v2 scheme (APK Signature Scheme v2): true' <<< "${verify_output}"; then
+            echo "Release APK is not signed with APK Signature Scheme v2." >&2
+            exit 1
+          fi
+          actual_cert="$("${build_tools}/apksigner" verify --print-certs "${source_apk}" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
+          expected_cert="$(printf '%s' "${EXPECTED_CERT_SHA256}" | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
+          if [[ -z "${actual_cert}" || "${actual_cert}" != "${expected_cert}" ]]; then
+            echo "Release certificate fingerprint did not match OPAH_RELEASE_CERT_SHA256." >&2
+            exit 1
+          fi
+
+          mkdir -p dist
+          cp "${source_apk}" "dist/${RELEASE_APK_NAME}"
+          cp "${RELEASE_NOTES_PATH}" "dist/release-notes.md"
+          cd dist
+          sha256sum "${RELEASE_APK_NAME}" > "${RELEASE_APK_NAME}.sha256"
+
+      - name: Upload verified release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: opah-${{ steps.version.outputs.name }}-release
+          path: |
+            dist/${{ steps.version.outputs.apk }}
+            dist/${{ steps.version.outputs.apk }}.sha256
+            dist/release-notes.md
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove decoded keystore
+        if: always()
+        shell: bash
+        run: rm -f "${RUNNER_TEMP}/opah-release.jks"
+
+  publish:
+    name: Publish GitHub release
+    if: github.event_name == 'push'
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Download verified release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: opah-${{ needs.release.outputs.release_version }}-release
+          path: dist
+
+      - name: Verify downloaded checksum
+        env:
+          RELEASE_APK_NAME: ${{ needs.release.outputs.apk_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum --check "${RELEASE_APK_NAME}.sha256"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_APK_NAME: ${{ needs.release.outputs.apk_name }}
+          RELEASE_VERSION: ${{ needs.release.outputs.release_version }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}"
+          "dist/${RELEASE_APK_NAME}"
+          "dist/${RELEASE_APK_NAME}.sha256"
+          --repo "${GITHUB_REPOSITORY}"
+          --verify-tag
+          --notes-file "dist/release-notes.md"
+          --title "Opah ${RELEASE_VERSION}"

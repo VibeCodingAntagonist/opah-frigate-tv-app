@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!-- Media3 marks parts of RTSP/analytics as unstable even in stable releases. -->
+    <issue id="UnsafeOptInUsageError">
+        <option
+            name="opt-in"
+            value="androidx.media3.common.util.UnstableApi" />
+    </issue>
+
+    <!-- Opah accepts arbitrary user-entered HTTP LAN hosts only after an on-screen warning. -->
+    <issue id="InsecureBaseConfiguration">
+        <ignore path="src/main/res/xml/network_security_config.xml" />
+    </issue>
+</lint>
