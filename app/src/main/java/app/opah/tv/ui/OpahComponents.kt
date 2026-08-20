@@ -18,8 +18,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,8 +45,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -68,6 +72,22 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.yield
+
+@Stable
+internal class TvInputFocusCoordinator {
+    var requestedEditingTarget by mutableStateOf<String?>(null)
+        private set
+
+    fun requestEditing(targetKey: String) {
+        requestedEditingTarget = targetKey
+    }
+
+    fun consumeEditingRequest(inputKey: String): Boolean {
+        if (requestedEditingTarget != inputKey) return false
+        requestedEditingTarget = null
+        return true
+    }
+}
 
 @Composable
 internal fun FocusCard(
@@ -213,23 +233,45 @@ internal fun ProductionTvInput(
     keyboardType: KeyboardType = KeyboardType.Text,
     imeAction: ImeAction = ImeAction.Next,
     requestInitialFocus: Boolean = false,
+    inputKey: String? = null,
+    focusCoordinator: TvInputFocusCoordinator? = null,
+    previousInputKey: String? = null,
+    nextInputKey: String? = null,
+    nextFocusRequester: FocusRequester? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(false) }
+    var editorHasFocused by remember { mutableStateOf(false) }
     var pendingMove by remember { mutableStateOf<FocusDirection?>(null) }
     var returnToNavigation by remember { mutableStateOf(false) }
+    var initialFocusHandled by remember(requestInitialFocus) { mutableStateOf(!requestInitialFocus) }
     val navigationFocusRequester = remember { FocusRequester() }
     val editorFocusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val requestedEditingTarget = focusCoordinator?.requestedEditingTarget
 
-    LaunchedEffect(requestInitialFocus, enabled, editing, pendingMove) {
+    LaunchedEffect(requestedEditingTarget, inputKey, enabled) {
+        if (
+            enabled &&
+            inputKey != null &&
+            focusCoordinator?.consumeEditingRequest(inputKey) == true
+        ) {
+            returnToNavigation = false
+            pendingMove = null
+            editing = true
+        }
+    }
+
+    LaunchedEffect(requestInitialFocus, initialFocusHandled, enabled, editing, pendingMove) {
         if (!enabled) return@LaunchedEffect
         if (editing) {
             editorFocusRequester.requestFocus()
             keyboardController?.show()
         } else {
-            if (requestInitialFocus || returnToNavigation || pendingMove != null) {
+            val claimInitialFocus = requestInitialFocus && !initialFocusHandled
+            if (claimInitialFocus) initialFocusHandled = true
+            if (claimInitialFocus || returnToNavigation || pendingMove != null) {
                 navigationFocusRequester.requestFocus()
             }
             keyboardController?.hide()
@@ -242,11 +284,28 @@ internal fun ProductionTvInput(
         }
     }
 
-    fun finishEditing(direction: FocusDirection? = null) {
+    fun requestTargetEditing(targetKey: String?): Boolean {
+        val coordinator = focusCoordinator ?: return false
+        targetKey ?: return false
+        coordinator.requestEditing(targetKey)
+        return true
+    }
+
+    fun finishEditing(
+        direction: FocusDirection? = null,
+        targetKey: String? = null,
+        targetFocusRequester: FocusRequester? = null,
+    ) {
         editing = false
-        pendingMove = direction
-        returnToNavigation = true
+        editorHasFocused = false
         keyboardController?.hide()
+        if (requestTargetEditing(targetKey) || targetFocusRequester?.requestFocus() == true) {
+            pendingMove = null
+            returnToNavigation = false
+        } else {
+            pendingMove = direction
+            returnToNavigation = true
+        }
     }
 
     val transformedValue = remember(value, visualTransformation) {
@@ -265,19 +324,45 @@ internal fun ProductionTvInput(
                 .fillMaxWidth()
                 .heightIn(min = 56.dp)
                 .focusRequester(navigationFocusRequester)
+                .pointerInput(enabled, editing) {
+                    if (enabled && !editing) {
+                        detectTapGestures {
+                            returnToNavigation = false
+                            editing = true
+                        }
+                    }
+                }
                 .onPreviewKeyEvent { event ->
-                    if (event.type != KeyEventType.KeyDown) {
-                        false
-                    } else {
-                        when (event.key) {
-                            Key.DirectionCenter, Key.Enter -> {
+                    when (event.key) {
+                        Key.DirectionCenter, Key.Enter -> {
+                            if (event.type == KeyEventType.KeyUp) {
                                 returnToNavigation = false
                                 editing = true
-                                true
                             }
-                            Key.DirectionUp -> focusManager.moveFocus(FocusDirection.Up)
-                            Key.DirectionDown -> focusManager.moveFocus(FocusDirection.Down)
-                            else -> false
+                            true
+                        }
+                        Key.Tab -> if (event.type == KeyEventType.KeyDown) {
+                            val direction = if (event.isShiftPressed) {
+                                FocusDirection.Previous
+                            } else {
+                                FocusDirection.Next
+                            }
+                            val targetKey = if (event.isShiftPressed) previousInputKey else nextInputKey
+                            val targetFocused = requestTargetEditing(targetKey) ||
+                                (!event.isShiftPressed && nextFocusRequester?.requestFocus() == true)
+                            if (!targetFocused) focusManager.moveFocus(direction)
+                            true
+                        } else {
+                            true
+                        }
+                        else -> if (event.type == KeyEventType.KeyDown) {
+                            when (event.key) {
+                                Key.DirectionUp -> focusManager.moveFocus(FocusDirection.Up)
+                                Key.DirectionDown -> focusManager.moveFocus(FocusDirection.Down)
+                                else -> false
+                            }
+                        } else {
+                            false
                         }
                     }
                 }
@@ -308,7 +393,7 @@ internal fun ProductionTvInput(
                         imeAction = imeAction,
                     ),
                     keyboardActions = KeyboardActions(
-                        onNext = { finishEditing(FocusDirection.Down) },
+                        onNext = { finishEditing(FocusDirection.Next, nextInputKey) },
                         onDone = { finishEditing() },
                     ),
                     cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
@@ -319,17 +404,37 @@ internal fun ProductionTvInput(
                     modifier = Modifier
                         .fillMaxWidth()
                         .focusRequester(editorFocusRequester)
+                        .onFocusChanged { focusState ->
+                            if (focusState.isFocused) {
+                                editorHasFocused = true
+                            } else if (editorHasFocused) {
+                                editorHasFocused = false
+                                editing = false
+                            }
+                        }
                         .onPreviewKeyEvent { event ->
                             if (event.type != KeyEventType.KeyDown) {
                                 false
                             } else {
                                 when (event.key) {
                                     Key.DirectionUp -> {
-                                        finishEditing(FocusDirection.Up)
+                                        finishEditing(FocusDirection.Up, previousInputKey)
                                         true
                                     }
                                     Key.DirectionDown -> {
-                                        finishEditing(FocusDirection.Down)
+                                        finishEditing(FocusDirection.Down, nextInputKey)
+                                        true
+                                    }
+                                    Key.Tab -> {
+                                        finishEditing(
+                                            if (event.isShiftPressed) {
+                                                FocusDirection.Previous
+                                            } else {
+                                                FocusDirection.Next
+                                            },
+                                            if (event.isShiftPressed) previousInputKey else nextInputKey,
+                                            if (event.isShiftPressed) null else nextFocusRequester,
+                                        )
                                         true
                                     }
                                     else -> false

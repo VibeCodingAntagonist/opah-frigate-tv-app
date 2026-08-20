@@ -280,7 +280,7 @@ internal object DocumentationFixtures {
             diagnosticsEnabled = true,
         ),
         review = ReviewBrowserState(
-            items = reviewItems,
+            items = reviewItems.filter { it.severity == ReviewSeverity.ALERT },
             knownLabels = reviewItems.flatMap(ReviewItem::objects).toSet(),
             knownZones = reviewItems.flatMap(ReviewItem::zones).toSet(),
             loadedOnce = true,

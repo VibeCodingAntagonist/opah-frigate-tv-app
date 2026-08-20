@@ -103,6 +103,9 @@ class FrigateRepository(
         item: ReviewItem,
     ): Result<Boolean> = reviewRepository.recordingAvailable(profile, item)
 
+    suspend fun markReviewReviewed(profile: ConnectionProfile, item: ReviewItem) =
+        reviewRepository.markReviewed(profile, item)
+
     suspend fun loadRecordingStorage(
         profile: ConnectionProfile,
         snapshot: DiscoverySnapshot,

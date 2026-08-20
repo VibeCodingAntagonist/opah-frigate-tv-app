@@ -17,7 +17,7 @@ You need:
 
 1. Open the project's [GitHub Releases page](https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/releases).
 2. Open the newest release.
-3. Under **Assets**, download the file named like `opah-v0.2.1.apk`.
+3. Under **Assets**, download the file named like `opah-v0.2.2.apk`.
 
 Do not download Opah from an unofficial mirror or APK website.
 
@@ -76,15 +76,15 @@ with the APK to confirm the download was not damaged or changed.
 On Windows PowerShell:
 
 ```powershell
-Get-FileHash .\opah-v0.2.1.apk -Algorithm SHA256
-Get-Content .\opah-v0.2.1.apk.sha256
+Get-FileHash .\opah-v0.2.2.apk -Algorithm SHA256
+Get-Content .\opah-v0.2.2.apk.sha256
 ```
 
 On macOS or Linux:
 
 ```bash
-sha256sum opah-v0.2.1.apk
-cat opah-v0.2.1.apk.sha256
+sha256sum opah-v0.2.2.apk
+cat opah-v0.2.2.apk.sha256
 ```
 
 The long strings of letters and numbers should match exactly.
@@ -95,7 +95,7 @@ ADB is an Android developer tool. You do not need it for a normal installation.
 If you already use ADB, connect to the intended TV and run:
 
 ```text
-adb install opah-v0.2.1.apk
+adb install opah-v0.2.2.apk
 ```
 
 Turn off wireless debugging when you finish.

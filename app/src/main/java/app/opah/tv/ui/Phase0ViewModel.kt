@@ -48,6 +48,7 @@ data class InformationUiState(
 
 data class Phase0UiState(
     val loading: Boolean = true,
+    val connectionWorkInProgress: Boolean = false,
     val statusMessage: String = "Starting Opah…",
     val errorMessage: String? = null,
     val savedProfile: ConnectionProfile? = null,
@@ -77,6 +78,7 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
     private var reviewLoadJob: Job? = null
     private var reviewDetailJob: Job? = null
     private var enrichmentJob: Job? = null
+    private var pendingCameraName: String? = null
 
     private val _state = MutableStateFlow(Phase0UiState())
     val state: StateFlow<Phase0UiState> = _state.asStateFlow()
@@ -149,7 +151,7 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
 
         viewModelScope.launch {
             enrichmentJob?.cancel()
-            beginWork("Connecting…")
+            beginConnectionWork("Connecting…")
             try {
                 val user = sessionManager.signIn(profile, password)
                 val bootstrap = repository.discoverEssential(profile, user)
@@ -178,7 +180,7 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
         ) ?: return
 
         viewModelScope.launch {
-            beginWork("Testing connection…")
+            beginConnectionWork("Testing connection…")
             runCatching {
                 sessionManager.testConnection(profile, password) { user ->
                     repository.discover(profile, user)
@@ -188,6 +190,7 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
                     _state.update {
                         it.copy(
                             loading = false,
+                            connectionWorkInProgress = false,
                             statusMessage = "Connected • ${snapshot.cameras.size} cameras",
                             errorMessage = null,
                         )
@@ -278,6 +281,11 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
             .onFailure { error ->
                 _state.update { it.copy(errorMessage = error.message ?: "No compatible stream.") }
             }
+    }
+
+    fun openCameraByName(cameraName: String) {
+        pendingCameraName = cameraName
+        openPendingCamera()
     }
 
     fun playStream(camera: Camera, option: LiveStreamOption) {
@@ -680,6 +688,42 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun markReviewReviewed(item: ReviewItem) {
+        if (item.hasBeenReviewed || _state.value.review.markingReviewedItemId != null) return
+        if (BuildConfig.DOCUMENTATION_MODE) {
+            publishReviewMarked(item.id)
+            return
+        }
+        val profile = _state.value.activeProfile ?: return
+        _state.update {
+            it.copy(
+                review = it.review.copy(
+                    markingReviewedItemId = item.id,
+                    detailErrorMessage = null,
+                ),
+            )
+        }
+        viewModelScope.launch {
+            runCatching { repository.markReviewReviewed(profile, item) }
+                .onSuccess { publishReviewMarked(item.id) }
+                .onFailure { error ->
+                    if (error is AuthenticationExpiredException) {
+                        handleConnectedFailure(error)
+                    } else {
+                        logger.warning("Marking Frigate Review item as reviewed failed", error)
+                        _state.update { state ->
+                            state.copy(
+                                review = state.review.copy(
+                                    markingReviewedItemId = null,
+                                    detailErrorMessage = error.toOpahFailure().userMessage,
+                                ),
+                            )
+                        }
+                    }
+                }
+        }
+    }
+
     fun cachedReviewImage(item: ReviewItem) = if (BuildConfig.DOCUMENTATION_MODE) {
         documentationImages.review(item)
     } else {
@@ -820,10 +864,23 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun beginConnectionWork(message: String) {
+        _state.update {
+            it.copy(
+                loading = true,
+                connectionWorkInProgress = true,
+                statusMessage = message,
+                errorMessage = null,
+                savedSessionRecoveryAvailable = false,
+            )
+        }
+    }
+
     private fun publishConnected(profile: ConnectionProfile, bootstrap: DiscoveryBootstrap) {
         _state.update {
             it.copy(
                 loading = false,
+                connectionWorkInProgress = false,
                 statusMessage = "Connected",
                 errorMessage = null,
                 savedProfile = profile,
@@ -834,6 +891,22 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
                 savedSessionRecoveryAvailable = false,
             )
         }
+        openPendingCamera()
+    }
+
+    private fun openPendingCamera() {
+        val cameraName = pendingCameraName ?: return
+        val current = _state.value
+        if (current.activeProfile == null || current.snapshot == null) return
+        pendingCameraName = null
+        val camera = current.snapshot.cameras.firstOrNull { it.name == cameraName }
+        if (camera == null) {
+            _state.update {
+                it.copy(errorMessage = "That camera is not available for this Frigate account.")
+            }
+            return
+        }
+        playAutomatic(camera)
     }
 
     private fun startEnrichment(profile: ConnectionProfile, bootstrap: DiscoveryBootstrap) {
@@ -897,6 +970,7 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
         _state.update {
             it.copy(
                 loading = false,
+                connectionWorkInProgress = false,
                 statusMessage = "Connection failed",
                 errorMessage = error.toOpahFailure().userMessage,
             )
@@ -914,6 +988,21 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
     private fun updateReviewFilters(transform: (ReviewFilters) -> ReviewFilters) {
         _state.update { it.copy(review = it.review.copy(filters = transform(it.review.filters))) }
         loadReview()
+    }
+
+    private fun publishReviewMarked(reviewId: String) {
+        _state.update { state ->
+            state.copy(
+                snapshot = state.snapshot?.copy(
+                    recentReviewItems = state.snapshot.recentReviewItems.withReviewedItem(reviewId),
+                ),
+                review = state.review.copy(
+                    items = state.review.items.withReviewedItem(reviewId),
+                    markingReviewedItemId = null,
+                    detailErrorMessage = null,
+                ),
+            )
+        }
     }
 
     private fun finishSignedOut(message: String) {

@@ -99,6 +99,10 @@ class ReviewRepository(
     fun playbackUrl(profile: ConnectionProfile, item: ReviewItem): String =
         gateway.reviewPlaybackUrl(profile, item)
 
+    suspend fun markReviewed(profile: ConnectionProfile, item: ReviewItem) {
+        gateway.setReviewsViewed(profile, setOf(item.id), reviewed = true)
+    }
+
     private suspend fun load(
         profile: ConnectionProfile,
         allowedCameras: Set<String>,

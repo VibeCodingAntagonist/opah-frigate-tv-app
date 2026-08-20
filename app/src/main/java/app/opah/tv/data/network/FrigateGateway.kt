@@ -16,6 +16,11 @@ interface FrigateGateway {
     suspend fun getGo2RtcStreams(profile: ConnectionProfile): String
     suspend fun getGo2RtcStream(profile: ConnectionProfile, streamName: String): String
     suspend fun getReview(profile: ConnectionProfile, query: ReviewSearchQuery): String
+    suspend fun setReviewsViewed(
+        profile: ConnectionProfile,
+        reviewIds: Set<String>,
+        reviewed: Boolean = true,
+    )
     suspend fun getRecordings(
         profile: ConnectionProfile,
         camera: String,

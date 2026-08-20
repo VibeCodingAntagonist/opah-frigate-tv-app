@@ -1,6 +1,7 @@
 package app.opah.tv.ui
 
 import android.graphics.Bitmap
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -66,6 +67,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -92,6 +94,14 @@ import java.util.Date
 import java.util.Locale
 
 private enum class InformationTab { PERFORMANCE, STORAGE }
+
+private const val SETUP_ADDRESS_INPUT = "setup:address"
+private const val SETUP_USERNAME_INPUT = "setup:username"
+private const val SETUP_PASSWORD_INPUT = "setup:password"
+private const val SETUP_RTSP_HOST_INPUT = "setup:rtsp-host"
+private const val SETUP_RTSP_PORT_INPUT = "setup:rtsp-port"
+private const val SETTINGS_RTSP_HOST_INPUT = "settings:rtsp-host"
+private const val SETTINGS_RTSP_PORT_INPUT = "settings:rtsp-port"
 
 internal const val OPAH_REPOSITORY_URL = "https://github.com/VibeCodingAntagonist/opah-frigate-tv-app"
 internal const val OPAH_INDEPENDENCE_NOTICE =
@@ -218,6 +228,7 @@ internal fun ConnectionSetupScreen(
     onTestConnection: (String, String, String, String, String) -> Unit,
     onConnect: (String, String, String, String, String) -> Unit,
     onForget: () -> Unit,
+    onExitRequested: () -> Unit,
 ) {
     val saved = state.savedProfile
     var serverUrl by rememberSaveable { mutableStateOf(saved?.apiBaseUrl.orEmpty()) }
@@ -228,7 +239,26 @@ internal fun ConnectionSetupScreen(
     }
     var rtspHost by rememberSaveable { mutableStateOf(saved?.rtspHostOverride.orEmpty()) }
     var rtspPort by rememberSaveable { mutableStateOf((saved?.rtspPort ?: 8554).toString()) }
+    var showExitConfirmation by rememberSaveable { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
+    val keepEditingFocusRequester = remember { FocusRequester() }
+    val inputFocusCoordinator = remember { TvInputFocusCoordinator() }
+    val testConnectionFocusRequester = remember { FocusRequester() }
+    val hasDraft = password.isNotEmpty() ||
+        serverUrl != saved?.apiBaseUrl.orEmpty() ||
+        username != saved?.username.orEmpty() ||
+        rtspHost != saved?.rtspHostOverride.orEmpty() ||
+        rtspPort != (saved?.rtspPort ?: 8554).toString()
+
+    BackHandler(enabled = state.loading || hasDraft) {
+        if (!state.loading) showExitConfirmation = true
+    }
+    LaunchedEffect(showExitConfirmation) {
+        if (showExitConfirmation) {
+            delay(50)
+            keepEditingFocusRequester.requestFocus()
+        }
+    }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -308,6 +338,9 @@ internal fun ConnectionSetupScreen(
                     enabled = !state.loading,
                     keyboardType = KeyboardType.Uri,
                     requestInitialFocus = true,
+                    inputKey = SETUP_ADDRESS_INPUT,
+                    focusCoordinator = inputFocusCoordinator,
+                    nextInputKey = SETUP_USERNAME_INPUT,
                 )
             }
             item {
@@ -317,6 +350,10 @@ internal fun ConnectionSetupScreen(
                     onValueChange = { username = it },
                     placeholder = "Frigate user",
                     enabled = !state.loading,
+                    inputKey = SETUP_USERNAME_INPUT,
+                    focusCoordinator = inputFocusCoordinator,
+                    previousInputKey = SETUP_ADDRESS_INPUT,
+                    nextInputKey = SETUP_PASSWORD_INPUT,
                 )
             }
             item {
@@ -328,7 +365,12 @@ internal fun ConnectionSetupScreen(
                     enabled = !state.loading,
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardType = KeyboardType.Password,
-                    imeAction = ImeAction.Done,
+                    imeAction = if (advanced) ImeAction.Next else ImeAction.Done,
+                    inputKey = SETUP_PASSWORD_INPUT,
+                    focusCoordinator = inputFocusCoordinator,
+                    previousInputKey = SETUP_USERNAME_INPUT,
+                    nextInputKey = if (advanced) SETUP_RTSP_HOST_INPUT else null,
+                    nextFocusRequester = if (advanced) null else testConnectionFocusRequester,
                 )
             }
             if (serverUrl.trim().startsWith("http://", ignoreCase = true)) {
@@ -352,6 +394,10 @@ internal fun ConnectionSetupScreen(
                         onValueChange = { rtspHost = it },
                         placeholder = "Defaults to the Frigate API host",
                         enabled = !state.loading,
+                        inputKey = SETUP_RTSP_HOST_INPUT,
+                        focusCoordinator = inputFocusCoordinator,
+                        previousInputKey = SETUP_PASSWORD_INPUT,
+                        nextInputKey = SETUP_RTSP_PORT_INPUT,
                     )
                 }
                 item {
@@ -363,6 +409,10 @@ internal fun ConnectionSetupScreen(
                         enabled = !state.loading,
                         keyboardType = KeyboardType.Number,
                         imeAction = ImeAction.Done,
+                        inputKey = SETUP_RTSP_PORT_INPUT,
+                        focusCoordinator = inputFocusCoordinator,
+                        previousInputKey = SETUP_RTSP_HOST_INPUT,
+                        nextFocusRequester = testConnectionFocusRequester,
                     )
                 }
             }
@@ -371,6 +421,7 @@ internal fun ConnectionSetupScreen(
                     Button(
                         onClick = { onTestConnection(serverUrl, username, password, rtspHost, rtspPort) },
                         enabled = !state.loading,
+                        modifier = Modifier.focusRequester(testConnectionFocusRequester),
                     ) { Text("Test connection") }
                     Button(
                         onClick = { onConnect(serverUrl, username, password, rtspHost, rtspPort) },
@@ -393,6 +444,41 @@ internal fun ConnectionSetupScreen(
                         ScreenMessage(message, isError = true)
                         Button(onClick = onDismissError) { Text("Dismiss") }
                     }
+                }
+            }
+        }
+    }
+
+    if (showExitConfirmation) {
+        Dialog(onDismissRequest = { showExitConfirmation = false }) {
+            Column(
+                modifier = Modifier
+                    .widthIn(min = 420.dp, max = 560.dp)
+                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(14.dp))
+                    .border(
+                        1.dp,
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                        RoundedCornerShape(14.dp),
+                    )
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Text("Leave setup?", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    "Your password will be cleared. Stay here if you want to finish connecting.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(
+                        onClick = { showExitConfirmation = false },
+                        modifier = Modifier.focusRequester(keepEditingFocusRequester),
+                    ) { Text("Keep editing") }
+                    Button(
+                        onClick = {
+                            password = ""
+                            onExitRequested()
+                        },
+                    ) { Text("Leave Opah") }
                 }
             }
         }
@@ -775,6 +861,8 @@ internal fun SettingsScreen(
     val profile = state.activeProfile ?: return
     var rtspHost by rememberSaveable(profile) { mutableStateOf(profile.rtspHostOverride.orEmpty()) }
     var rtspPort by rememberSaveable(profile) { mutableStateOf(profile.rtspPort.toString()) }
+    val inputFocusCoordinator = remember { TvInputFocusCoordinator() }
+    val saveRtspFocusRequester = remember { FocusRequester() }
     val listState = rememberLazyListState()
     val customThemeVisible = state.settings.appearanceMode == AppearanceMode.CUSTOM
     val supportIndex = if (customThemeVisible) 5 else 4
@@ -897,6 +985,9 @@ internal fun SettingsScreen(
                     onValueChange = { rtspHost = it },
                     placeholder = "Defaults to the Frigate API host",
                     enabled = true,
+                    inputKey = SETTINGS_RTSP_HOST_INPUT,
+                    focusCoordinator = inputFocusCoordinator,
+                    nextInputKey = SETTINGS_RTSP_PORT_INPUT,
                 )
                 ProductionTvInput(
                     label = "RTSP port",
@@ -906,8 +997,15 @@ internal fun SettingsScreen(
                     enabled = true,
                     keyboardType = KeyboardType.Number,
                     imeAction = ImeAction.Done,
+                    inputKey = SETTINGS_RTSP_PORT_INPUT,
+                    focusCoordinator = inputFocusCoordinator,
+                    previousInputKey = SETTINGS_RTSP_HOST_INPUT,
+                    nextFocusRequester = saveRtspFocusRequester,
                 )
-                Button(onClick = { onUpdateRtspRoute(rtspHost, rtspPort) }) { Text("Save RTSP route") }
+                Button(
+                    onClick = { onUpdateRtspRoute(rtspHost, rtspPort) },
+                    modifier = Modifier.focusRequester(saveRtspFocusRequester),
+                ) { Text("Save RTSP route") }
             }
         }
     }

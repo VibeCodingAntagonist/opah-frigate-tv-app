@@ -40,7 +40,12 @@ data class ReviewBrowserState(
     val selectedItemId: String? = null,
     val recordingState: ReviewRecordingState = ReviewRecordingState.IDLE,
     val detailErrorMessage: String? = null,
+    val markingReviewedItemId: String? = null,
 )
+
+internal fun List<ReviewItem>.withReviewedItem(reviewId: String): List<ReviewItem> = map { item ->
+    if (item.id == reviewId) item.copy(hasBeenReviewed = true) else item
+}
 
 internal fun ReviewFilters.toSearchQuery(
     allowedCameras: Set<String>,

@@ -2,6 +2,7 @@ package app.opah.tv
 
 import android.app.PictureInPictureParams
 import android.content.pm.PackageManager
+import android.content.Intent
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
@@ -28,6 +29,7 @@ class MainActivity : ComponentActivity() {
         val documentationSettingsPage = intent.documentationExtra(EXTRA_DOCUMENTATION_SETTINGS_PAGE)
         val documentationInformationTab = intent.documentationExtra(EXTRA_DOCUMENTATION_INFORMATION_TAB)
         if (BuildConfig.DOCUMENTATION_MODE) viewModel.setDocumentationScenario(documentationScenario)
+        handleCameraLaunch(intent)
         setContent {
             OpahApp(
                 viewModel = viewModel,
@@ -35,11 +37,31 @@ class MainActivity : ComponentActivity() {
                 pictureInPictureActive = pipModeActive.value,
                 onEnterPictureInPicture = ::requestLivePictureInPicture,
                 onFullyDrawn = ::reportFullyDrawnOnce,
+                onExitRequested = ::finish,
                 initialDestinationName = documentationDestination,
                 initialSettingsPageName = documentationSettingsPage,
                 initialInformationTabName = documentationInformationTab,
             )
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleCameraLaunch(intent)
+    }
+
+    private fun handleCameraLaunch(intent: Intent) {
+        val uri = intent.data
+        val cameraName = cameraNameFromLaunch(
+            explicitCameraName = intent.getStringExtra(EXTRA_CAMERA_NAME),
+            compatibleCameraName = intent.getStringExtra(EXTRA_CAMERA_NAME_COMPAT),
+            action = intent.action,
+            scheme = uri?.scheme,
+            host = uri?.host,
+            pathSegments = uri?.pathSegments.orEmpty(),
+        )
+        cameraName?.let(viewModel::openCameraByName)
     }
 
     private fun reportFullyDrawnOnce() {
@@ -98,9 +120,31 @@ class MainActivity : ComponentActivity() {
         if (BuildConfig.DOCUMENTATION_MODE) getStringExtra(name) else null
 
     private companion object {
+        const val EXTRA_CAMERA_NAME = "app.opah.tv.extra.CAMERA_NAME"
+        const val EXTRA_CAMERA_NAME_COMPAT = "camera"
         const val EXTRA_DOCUMENTATION_SCENARIO = "documentationScenario"
         const val EXTRA_DOCUMENTATION_DESTINATION = "documentationDestination"
         const val EXTRA_DOCUMENTATION_SETTINGS_PAGE = "documentationSettingsPage"
         const val EXTRA_DOCUMENTATION_INFORMATION_TAB = "documentationInformationTab"
     }
 }
+
+internal fun cameraNameFromLaunch(
+    explicitCameraName: String?,
+    action: String?,
+    scheme: String?,
+    host: String?,
+    pathSegments: List<String>,
+    compatibleCameraName: String? = null,
+): String? {
+    val candidate = explicitCameraName ?: compatibleCameraName ?: pathSegments.singleOrNull()?.takeIf {
+        action == Intent.ACTION_VIEW &&
+            scheme.equals("opah", ignoreCase = true) &&
+            host.equals("live", ignoreCase = true)
+    }
+    return candidate
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() && it.length <= MAX_CAMERA_NAME_LENGTH && it.none(Char::isISOControl) }
+}
+
+private const val MAX_CAMERA_NAME_LENGTH = 256

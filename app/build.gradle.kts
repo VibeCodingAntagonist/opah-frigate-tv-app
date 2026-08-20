@@ -6,10 +6,10 @@ plugins {
 
 val opahVersionCode = providers.gradleProperty("opah.versionCode")
     .map(String::toInt)
-    .orElse(2001)
+    .orElse(2002)
     .get()
 val opahVersionName = providers.gradleProperty("opah.versionName")
-    .orElse("0.2.1-dev")
+    .orElse("0.2.2-dev")
     .get()
 
 val releaseKeystoreFile = providers.environmentVariable("OPAH_RELEASE_KEYSTORE_FILE").orNull
@@ -80,11 +80,6 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-        }
-        create("candidate") {
-            initWith(getByName("release"))
-            signingConfig = signingConfigs.getByName("debug")
-            matchingFallbacks += "release"
         }
         create("documentation") {
             initWith(getByName("debug"))

@@ -6,6 +6,21 @@ This page lists the user-visible changes in each Opah release.
 
 No changes have been announced yet.
 
+## 0.2.2 - 2026-08-20
+
+### Easier setup and Review
+
+- Improved first-time setup when using a television remote, keyboard, or mouse.
+- Kept connection details in place after **Test connection**.
+- Added a warning before leaving setup with unfinished changes.
+- Added **Mark as reviewed** to Review details.
+- Added a visible **Reviewed** label to reviewed items.
+
+### Camera shortcuts
+
+- Added a camera link that compatible button-mapping and home-automation apps
+  can use to open a chosen live camera directly.
+
 ## 0.2.1 - 2026-08-20
 
 ### Maintenance update
@@ -64,6 +79,7 @@ No changes have been announced yet.
 - Video support depends on the formats supported by the TV and camera.
 - Later Frigate 0.18 builds are not automatically covered by the beta 3 test.
 
-[Unreleased]: https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/releases/tag/v0.2.2
 [0.2.1]: https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/releases/tag/v0.2.1
 [0.2.0]: https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/tree/v0.2.0

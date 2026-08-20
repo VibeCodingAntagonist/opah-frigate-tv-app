@@ -12,7 +12,9 @@ supported by the Frigate team.
 - See live views from your cameras
 - Open Frigate Birdseye in a dedicated full-screen view
 - Browse alerts and detections from Frigate Review
+- Mark Review items as reviewed and see their status at a glance
 - Play recordings with a timeline and familiar video controls
+- Open a chosen camera directly from a compatible shortcut or automation
 - Keep a live camera visible in picture-in-picture while using another app
 - Hear camera audio and mute it when needed
 - View Frigate storage and performance information
@@ -73,6 +75,30 @@ local address.
 
 After a successful sign-in, Opah can securely remember the connection and sign
 in automatically. Choose **Sign out** to remove the saved sign-in information.
+
+## Optional camera shortcuts
+
+Some Android TV button-mapping and home-automation apps can send Android
+commands. They can use this command to open a chosen camera directly:
+
+```text
+am start -a android.intent.action.VIEW -d "opah://live/front_door" app.opah.tv/.MainActivity
+```
+
+Replace `front_door` with the camera's exact name in Frigate. Capital letters
+and underscores must match. Opah must already have a saved, working connection,
+and it will open only cameras available to that Frigate account.
+
+Home Assistant's Android TV ADB integration can send the same `am start`
+command with its `androidtv.adb_command` action. A button-mapping app can call a
+Home Assistant webhook, which then sends the command to the TV.
+
+Tools that use an Android extra instead of a link can use this equivalent
+command:
+
+```text
+am start -n app.opah.tv/.MainActivity --es camera "front_door"
+```
 
 ## Important limitations
 

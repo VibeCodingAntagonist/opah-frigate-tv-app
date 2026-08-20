@@ -11,10 +11,11 @@ try when a camera does not play.
 | Frigate 0.18.0 beta 3 (`344efb6`) | This exact beta build was tested |
 | Android TV / Google TV | Android 7.0 or newer |
 | Main test device | 2024 onn. 4K Pro with Android 14 |
+| Additional test device | NVIDIA Shield TV with Android 11 |
 | H.264 camera video | Tested |
 | H.265 camera video | Tested on a TV that supports H.265 |
 | Birdseye | Tested |
-| Review recordings | Browsing, filtering, seeking, and playback tested |
+| Review recordings | Browsing, filtering, reviewed status, seeking, and playback tested |
 | Picture-in-picture | Tested on the main device; support varies by TV |
 
 Newer Frigate releases may work before they are listed here, but they have not

@@ -67,10 +67,12 @@ internal fun rootSurface(
     hasPlayback: Boolean,
     hasConnectedContent: Boolean,
     loading: Boolean,
+    connectionWorkInProgress: Boolean = false,
     savedSessionRecoveryAvailable: Boolean = false,
 ): RootSurface = when {
     hasPlayback -> RootSurface.PLAYBACK
     hasConnectedContent -> RootSurface.CONNECTED
+    connectionWorkInProgress -> RootSurface.SETUP
     loading -> RootSurface.LOADING
     savedSessionRecoveryAvailable -> RootSurface.RECOVERY
     else -> RootSurface.SETUP
@@ -83,6 +85,7 @@ fun OpahApp(
     pictureInPictureActive: Boolean = false,
     onEnterPictureInPicture: (PictureInPictureRequest) -> Boolean = { false },
     onFullyDrawn: () -> Unit = {},
+    onExitRequested: () -> Unit = {},
     initialDestinationName: String? = null,
     initialSettingsPageName: String? = null,
     initialInformationTabName: String? = null,
@@ -112,6 +115,7 @@ fun OpahApp(
             hasPlayback = playback != null,
             hasConnectedContent = state.activeProfile != null && state.snapshot != null,
             loading = state.loading,
+            connectionWorkInProgress = state.connectionWorkInProgress,
             savedSessionRecoveryAvailable = state.savedSessionRecoveryAvailable,
         )
 
@@ -298,6 +302,7 @@ fun OpahApp(
                                     returnDestinationName = AppDestination.REVIEW.name
                                     viewModel.playReview(item)
                                 },
+                                onMarkReviewed = viewModel::markReviewReviewed,
                                 cachedBitmap = { item -> viewModel.cachedReviewImage(item)?.bitmap },
                                 refreshBitmap = { item, height ->
                                     viewModel.refreshReviewImage(item, height).getOrNull()?.bitmap
@@ -365,6 +370,7 @@ fun OpahApp(
                 onTestConnection = viewModel::testConnection,
                 onConnect = viewModel::connect,
                 onForget = { viewModel.logout(true) },
+                onExitRequested = onExitRequested,
             )
         }
     }

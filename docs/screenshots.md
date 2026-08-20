@@ -30,7 +30,7 @@ private address appears in the gallery.
 
 | Review grid | Review details |
 | --- | --- |
-| <img src="screenshots/08-review.png" alt="Opah Review alerts grid with example events" width="720"> | <img src="screenshots/09-review-detail.png" alt="Opah Review event details with an example camera scene" width="720"> |
+| <img src="screenshots/08-review.png" alt="Opah Review alerts grid with example events and a Reviewed label" width="720"> | <img src="screenshots/09-review-detail.png" alt="Opah Review event details with the Mark as reviewed control" width="720"> |
 
 ## Playback
 

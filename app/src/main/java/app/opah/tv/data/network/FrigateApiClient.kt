@@ -125,6 +125,28 @@ class FrigateApiClient(
         return executeText(Request.Builder().url(url).get().build())
     }
 
+    override suspend fun setReviewsViewed(
+        profile: ConnectionProfile,
+        reviewIds: Set<String>,
+        reviewed: Boolean,
+    ) {
+        require(reviewIds.isNotEmpty()) { "At least one Review item is required." }
+        require(reviewIds.none(String::isBlank)) { "Review item IDs cannot be blank." }
+        val payload = buildString {
+            append("{\"ids\":[")
+            append(reviewIds.sorted().joinToString(",") { json.encodeToString(it) })
+            append("],\"reviewed\":")
+            append(reviewed)
+            append('}')
+        }
+        execute(
+            Request.Builder()
+                .url(apiUrl(profile, "reviews", "viewed"))
+                .post(payload.toRequestBody(JSON_MEDIA_TYPE))
+                .build(),
+        )
+    }
+
     override suspend fun getRecordings(
         profile: ConnectionProfile,
         camera: String,

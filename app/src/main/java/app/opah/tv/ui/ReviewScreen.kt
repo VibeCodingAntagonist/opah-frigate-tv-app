@@ -36,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -75,6 +76,7 @@ internal fun ReviewScreen(
     onSelectItem: (ReviewItem, String) -> Unit,
     onCloseItem: () -> Unit,
     onPlayItem: (ReviewItem) -> Unit,
+    onMarkReviewed: (ReviewItem) -> Unit,
     cachedBitmap: (ReviewItem) -> Bitmap?,
     refreshBitmap: suspend (ReviewItem, Int) -> Bitmap?,
 ) {
@@ -95,6 +97,8 @@ internal fun ReviewScreen(
             errorMessage = review.detailErrorMessage,
             onBack = onCloseItem,
             onPlay = { onPlayItem(selected) },
+            onMarkReviewed = { onMarkReviewed(selected) },
+            markingReviewed = review.markingReviewedItemId == selected.id,
             cachedBitmap = { cachedBitmap(selected) },
             refreshBitmap = { refreshBitmap(selected, 720) },
         )
@@ -295,14 +299,32 @@ private fun ReviewGrid(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column {
-                    ReviewThumbnail(
-                        item = item,
-                        cachedBitmap = { cachedBitmap(item) },
-                        refreshBitmap = { refreshBitmap(item, 300) },
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .aspectRatio(16f / 9f),
-                    )
+                    ) {
+                        ReviewThumbnail(
+                            item = item,
+                            cachedBitmap = { cachedBitmap(item) },
+                            refreshBitmap = { refreshBitmap(item, 300) },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        if (item.hasBeenReviewed) {
+                            Text(
+                                text = "Reviewed",
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.labelMedium,
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(10.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.primary)
+                                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                            )
+                        }
+                    }
                     Column(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
                         verticalArrangement = Arrangement.spacedBy(3.dp),
@@ -352,13 +374,18 @@ private fun ReviewDetail(
     errorMessage: String?,
     onBack: () -> Unit,
     onPlay: () -> Unit,
+    onMarkReviewed: () -> Unit,
+    markingReviewed: Boolean,
     cachedBitmap: () -> Bitmap?,
     refreshBitmap: suspend () -> Bitmap?,
 ) {
     val initialFocusRequester = remember(item.id) { FocusRequester() }
-    LaunchedEffect(item.id) {
+    val playFocusRequester = remember(item.id) { FocusRequester() }
+    val markReviewedFocusRequester = remember(item.id) { FocusRequester() }
+    LaunchedEffect(item.id, item.hasBeenReviewed) {
         // Returning from full-screen Media3 playback recreates the connected shell.
-        // Give that shell one layout pass before taking focus back from the nav rail.
+        // A completed Review action also removes its button. Give the shell one
+        // layout pass before taking focus back from the navigation rail.
         delay(100)
         initialFocusRequester.requestFocus()
     }
@@ -381,7 +408,7 @@ private fun ReviewDetail(
                 )
             }
             Text(
-                if (item.hasBeenReviewed) "Previously reviewed" else "Not yet reviewed",
+                if (item.hasBeenReviewed) "Reviewed" else "Not reviewed",
                 color = MaterialTheme.colorScheme.secondary,
                 fontWeight = FontWeight.Bold,
             )
@@ -415,13 +442,36 @@ private fun ReviewDetail(
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Button(
                         onClick = onBack,
-                        modifier = Modifier.focusRequester(initialFocusRequester),
+                        modifier = Modifier
+                            .focusRequester(initialFocusRequester)
+                            .focusProperties {
+                                right = playFocusRequester
+                                if (!item.hasBeenReviewed) down = markReviewedFocusRequester
+                            },
                     ) { Text("Back to Review") }
                     Button(
                         onClick = onPlay,
                         enabled = recordingState == ReviewRecordingState.AVAILABLE,
+                        modifier = Modifier
+                            .focusRequester(playFocusRequester)
+                            .focusProperties {
+                                left = initialFocusRequester
+                                if (!item.hasBeenReviewed) down = markReviewedFocusRequester
+                            },
                     ) {
                         Text(if (recordingState == ReviewRecordingState.CHECKING) "Checking…" else "Play recording")
+                    }
+                }
+                if (!item.hasBeenReviewed) {
+                    Button(
+                        onClick = onMarkReviewed,
+                        enabled = !markingReviewed,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(markReviewedFocusRequester)
+                            .focusProperties { up = initialFocusRequester },
+                    ) {
+                        Text(if (markingReviewed) "Saving…" else "Mark as reviewed")
                     }
                 }
             }
@@ -562,6 +612,7 @@ private fun reviewAccessibilityLabel(item: ReviewItem): String = buildString {
     append(friendlyName(item.camera))
     item.objects.firstOrNull()?.let { append(", ").append(friendlyName(it)) }
     append(", ").append(formatReviewDateTime(item.startTime))
+    if (item.hasBeenReviewed) append(", reviewed")
 }
 
 private fun cameraLabel(camera: String?, cameras: List<Camera>): String =
