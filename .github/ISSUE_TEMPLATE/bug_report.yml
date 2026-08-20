@@ -12,7 +12,7 @@ body:
     id: opah_version
     attributes:
       label: Opah version
-      placeholder: 0.2.0
+      placeholder: 0.2.1
     validations:
       required: true
   - type: input

@@ -56,6 +56,7 @@ internal enum class AppDestination(val label: String, val iconRes: Int) {
     REVIEW("Review", R.drawable.ic_review),
     INFORMATION("Information", R.drawable.ic_info),
     SETTINGS("Settings", R.drawable.ic_settings),
+    ABOUT("About", R.drawable.ic_about),
 }
 
 private enum class SettingsPage { MAIN, DIAGNOSTICS }
@@ -343,6 +344,8 @@ fun OpahApp(
                                     initialFocusRequester = diagnosticsBackFocusRequester,
                                 )
                             }
+
+                            AppDestination.ABOUT -> AboutScreen()
                         }
                     }
                 }
@@ -472,11 +475,6 @@ private fun ConnectedShell(
                                 color = MaterialTheme.colorScheme.onSurface,
                                 fontWeight = FontWeight.Bold,
                                 style = MaterialTheme.typography.titleMedium,
-                            )
-                            Text(
-                                text = "for Frigate",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodySmall,
                             )
                         }
                     }

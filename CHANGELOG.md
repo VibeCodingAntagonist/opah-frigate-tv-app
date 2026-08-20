@@ -6,6 +6,20 @@ This page lists the user-visible changes in each Opah release.
 
 No changes have been announced yet.
 
+## 0.2.1 - 2026-08-20
+
+### Maintenance update
+
+- Updated the text and artwork shown in the TV launcher and while Opah starts.
+- Added an About page with the app version, privacy information, license,
+  project link, and support information.
+
+### Important update note
+
+- Android cannot install `0.2.1` over `0.2.0` because the releases use different
+  security keys. Uninstall `0.2.0` first, then install `0.2.1` and connect to
+  Frigate again. Later updates should install normally.
+
 ## 0.2.0 - 2026-08-19
 
 ### New features
@@ -50,5 +64,6 @@ No changes have been announced yet.
 - Video support depends on the formats supported by the TV and camera.
 - Later Frigate 0.18 builds are not automatically covered by the beta 3 test.
 
-[Unreleased]: https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/releases/tag/v0.2.0
+[Unreleased]: https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/releases/tag/v0.2.1
+[0.2.0]: https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/tree/v0.2.0

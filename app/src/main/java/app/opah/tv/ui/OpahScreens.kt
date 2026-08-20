@@ -56,6 +56,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -71,6 +72,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import app.opah.tv.BuildConfig
 import app.opah.tv.R
 import app.opah.tv.data.model.AppearanceMode
 import app.opah.tv.data.model.Camera
@@ -84,11 +86,23 @@ import app.opah.tv.data.model.ReviewSeverity
 import app.opah.tv.data.model.RecordingStorageSummary
 import app.opah.tv.data.model.StreamPreference
 import app.opah.tv.data.model.ThemeColorPolicy
+import kotlinx.coroutines.delay
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
 
 private enum class InformationTab { PERFORMANCE, STORAGE }
+
+internal const val OPAH_REPOSITORY_URL = "https://github.com/VibeCodingAntagonist/opah-frigate-tv-app"
+internal const val OPAH_INDEPENDENCE_NOTICE =
+    "Opah is an independent community project. It is not made, approved, or supported by " +
+        "the Frigate team."
+internal const val OPAH_TRADEMARK_NOTICE =
+    "Frigate and Frigate NVR are trademarks of Frigate, Inc. Opah uses those names only to " +
+        "explain what the app works with."
+internal const val OPAH_PRIVACY_NOTICE =
+    "Opah has no ads and does not track how you use the app. Your saved sign-in is encrypted " +
+        "on this device."
 
 @Composable
 internal fun StartupLoadingScreen(message: String) {
@@ -120,11 +134,6 @@ internal fun StartupLoadingScreen(message: String) {
                 color = MaterialTheme.colorScheme.onBackground,
                 style = MaterialTheme.typography.headlineLarge,
                 fontWeight = FontWeight.Bold,
-            )
-            Text(
-                text = "for Frigate",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Canvas(
                 modifier = Modifier
@@ -266,11 +275,6 @@ internal fun ConnectionSetupScreen(
                         color = MaterialTheme.colorScheme.onBackground,
                         style = MaterialTheme.typography.displayMedium,
                         fontWeight = FontWeight.Bold,
-                    )
-                    Text(
-                        text = "for Frigate",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.titleLarge,
                     )
                 }
             }
@@ -904,6 +908,101 @@ internal fun SettingsScreen(
                     imeAction = ImeAction.Done,
                 )
                 Button(onClick = { onUpdateRtspRoute(rtspHost, rtspPort) }) { Text("Save RTSP route") }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun AboutScreen() {
+    val uriHandler = LocalUriHandler.current
+    var repositoryButtonFocused by remember { mutableStateOf(false) }
+    var repositoryButtonArmed by remember { mutableStateOf(false) }
+    LaunchedEffect(repositoryButtonFocused) {
+        repositoryButtonArmed = false
+        if (repositoryButtonFocused) {
+            // Prevent the D-pad release that selected About from activating the
+            // first actionable control as focus moves into the new destination.
+            delay(400)
+            repositoryButtonArmed = true
+        }
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 34.dp, vertical = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Image(
+                painter = painterResource(R.drawable.opah_brand_mark),
+                contentDescription = null,
+                modifier = Modifier.size(72.dp),
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Opah", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    "Version ${BuildConfig.VERSION_NAME}",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                SettingsSection("Independent project", isFocusable = true) {
+                    Text(OPAH_INDEPENDENCE_NOTICE, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                SettingsSection(
+                    "Privacy",
+                    "Opah connects this device directly to the Frigate server you choose.",
+                ) {
+                    Text(
+                        OPAH_PRIVACY_NOTICE,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                SettingsSection("Project and support", "Opah uses the Apache License 2.0.") {
+                    Text(
+                        OPAH_REPOSITORY_URL,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Button(
+                        onClick = {
+                            if (repositoryButtonArmed) {
+                                runCatching { uriHandler.openUri(OPAH_REPOSITORY_URL) }
+                            }
+                        },
+                        modifier = Modifier.onFocusChanged {
+                            repositoryButtonFocused = it.isFocused
+                        },
+                    ) {
+                        Text("Open project on GitHub")
+                    }
+                }
+                SettingsSection("Trademarks and warranty") {
+                    Text(OPAH_TRADEMARK_NOTICE, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        "Copyright © 2026 Opah contributors. Opah is provided as-is, without warranty.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }

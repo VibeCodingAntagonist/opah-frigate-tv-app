@@ -5,7 +5,8 @@ you can do to keep the connection safe.
 
 ## In everyday terms
 
-- Your Frigate username, password, and saved sign-in are encrypted on the TV.
+- Your Frigate username, password, and saved sign-in are encrypted on the
+  device.
 - Opah connects directly from the TV to the Frigate addresses you provide. It
   does not send your camera data through an Opah cloud service.
 - Opah does not create its own camera recording archive.

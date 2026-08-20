@@ -1,11 +1,11 @@
-# Opah for Frigate
+# Opah
 
 Opah lets you view cameras and recordings from your
 [Frigate security-camera system](https://frigate.video/) on an Android TV or
 Google TV using a normal television remote.
 
-Opah is an independent community project. It is not made or supported by the
-Frigate team.
+Opah is an independent community project. It is not made, approved, or
+supported by the Frigate team.
 
 ## What you can do
 
@@ -16,6 +16,7 @@ Frigate team.
 - Keep a live camera visible in picture-in-picture while using another app
 - Hear camera audio and mute it when needed
 - View Frigate storage and performance information
+- Find project, privacy, and support information on the in-app About page
 - Choose a light, dark, system, or custom color theme
 - Sign in automatically after the first successful connection
 
@@ -86,7 +87,7 @@ in automatically. Choose **Sign out** to remove the saved sign-in information.
 
 ## Privacy and safety
 
-- Your Frigate password and saved sign-in are encrypted on the TV.
+- Your Frigate password and saved sign-in are encrypted on the device.
 - Opah does not send camera data through an Opah cloud service.
 - Opah does not keep its own archive of camera recordings.
 - The Diagnostics page is designed to leave out passwords, private addresses,
@@ -112,5 +113,5 @@ Developers who want to build or improve Opah should start with
 Opah is available under the [Apache License 2.0](LICENSE). Release history is in
 [CHANGELOG.md](CHANGELOG.md).
 
-Frigate and Frigate NVR are trademarks of their respective owner. References to
-Frigate describe compatibility only.
+Frigate and Frigate NVR are trademarks of Frigate, Inc. Opah uses those names
+only to explain what the app works with.

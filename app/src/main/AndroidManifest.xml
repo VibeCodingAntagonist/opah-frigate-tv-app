@@ -18,7 +18,7 @@
     <application
         android:name=".OpahApplication"
         android:allowBackup="false"
-        android:banner="@drawable/opah_banner_for_frigate"
+        android:banner="@drawable/opah_banner"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="false"
         android:icon="@drawable/opah_launcher"

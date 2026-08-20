@@ -2,14 +2,13 @@
 
 Every image below is a 1920×1080 Android TV screenshot made with fictional
 example data and generated camera scenes. No real camera, account, server, or
-private address appears in the gallery. Developers can read the
-[screenshot creation notes](screenshots/README.md).
+private address appears in the gallery.
 
 ## Start and connection states
 
 | Connecting | First-time connection |
 | --- | --- |
-| <img src="screenshots/01-connecting.png" alt="Opah connecting screen" width="720"> | <img src="screenshots/02-connection-setup.png" alt="Opah Frigate connection form with fictional example values" width="720"> |
+| <img src="screenshots/01-connecting.png" alt="Opah connecting screen" width="720"> | <img src="screenshots/02-connection-setup.png" alt="Opah connection form with fictional example values" width="720"> |
 
 | Recoverable connection failure |
 | --- |
@@ -58,3 +57,9 @@ private address appears in the gallery. Developers can read the
 | Diagnostics |
 | --- |
 | <img src="screenshots/16-diagnostics.png" alt="Opah Diagnostics page with fictional compatibility data" width="720"> |
+
+## About
+
+| Project information and disclosures |
+| --- |
+| <img src="screenshots/18-about.png" alt="Opah About page with version, privacy, project, and support information" width="720"> |

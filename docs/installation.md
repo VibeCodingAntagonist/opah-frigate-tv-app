@@ -17,7 +17,7 @@ You need:
 
 1. Open the project's [GitHub Releases page](https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/releases).
 2. Open the newest release.
-3. Under **Assets**, download the file named like `opah-v0.2.0.apk`.
+3. Under **Assets**, download the file named like `opah-v0.2.1.apk`.
 
 Do not download Opah from an unofficial mirror or APK website.
 
@@ -29,7 +29,7 @@ Do not download Opah from an unofficial mirror or APK website.
    the displayed settings page and allow it. This is Android's normal warning
    for apps installed outside Google Play.
 4. Return to the APK and choose **Install**.
-5. When installation finishes, open **Opah for Frigate** from the Apps row.
+5. When installation finishes, open **Opah** from the Apps row.
 6. For extra safety, you may turn off the file manager's install permission
    after Opah is installed.
 
@@ -52,6 +52,13 @@ Download the newer Opah APK from this repository and open it on the TV. Android
 should offer to update the existing app. Your saved server and sign-in should
 remain in place.
 
+### One-time step when moving from 0.2.0 to 0.2.1
+
+Versions `0.2.0` and `0.2.1` use different security keys, so Android cannot
+install one over the other. Uninstall `0.2.0`, install `0.2.1`, and connect to
+Frigate again. Later updates should install normally and keep the saved
+connection.
+
 If Android says the update is not compatible with the installed copy, stop and
 make sure both copies came from this official repository. Do not uninstall the
 working app unless you are prepared to enter your connection details again.
@@ -69,15 +76,15 @@ with the APK to confirm the download was not damaged or changed.
 On Windows PowerShell:
 
 ```powershell
-Get-FileHash .\opah-v0.2.0.apk -Algorithm SHA256
-Get-Content .\opah-v0.2.0.apk.sha256
+Get-FileHash .\opah-v0.2.1.apk -Algorithm SHA256
+Get-Content .\opah-v0.2.1.apk.sha256
 ```
 
 On macOS or Linux:
 
 ```bash
-sha256sum opah-v0.2.0.apk
-cat opah-v0.2.0.apk.sha256
+sha256sum opah-v0.2.1.apk
+cat opah-v0.2.1.apk.sha256
 ```
 
 The long strings of letters and numbers should match exactly.
@@ -88,7 +95,7 @@ ADB is an Android developer tool. You do not need it for a normal installation.
 If you already use ADB, connect to the intended TV and run:
 
 ```text
-adb install -r opah-v0.2.0.apk
+adb install opah-v0.2.1.apk
 ```
 
 Turn off wireless debugging when you finish.
