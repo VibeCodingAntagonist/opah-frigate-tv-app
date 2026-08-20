@@ -48,6 +48,7 @@ data class InformationUiState(
 
 data class Phase0UiState(
     val loading: Boolean = true,
+    val testingConnection: Boolean = false,
     val statusMessage: String = "Starting Opah…",
     val errorMessage: String? = null,
     val savedProfile: ConnectionProfile? = null,
@@ -77,6 +78,7 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
     private var reviewLoadJob: Job? = null
     private var reviewDetailJob: Job? = null
     private var enrichmentJob: Job? = null
+    private var pendingLiveCameraName: String? = null
 
     private val _state = MutableStateFlow(Phase0UiState())
     val state: StateFlow<Phase0UiState> = _state.asStateFlow()
@@ -169,7 +171,7 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
         rtspHostOverride: String,
         rtspPortText: String,
     ) {
-        if (_state.value.loading) return
+        if (_state.value.loading || _state.value.testingConnection) return
         val profile = createProfile(
             rawUrl = rawUrl,
             username = username,
@@ -178,7 +180,13 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
         ) ?: return
 
         viewModelScope.launch {
-            beginWork("Testing connection…")
+            // Deliberately does not go through beginWork()/loading: that flag drives the
+            // root-surface swap to the full-screen loader, which would unmount
+            // ConnectionSetupScreen and wipe the address/username/password the user just typed
+            // (they aren't persisted to savedProfile until a real Connect succeeds).
+            _state.update {
+                it.copy(testingConnection = true, statusMessage = "Testing connection…", errorMessage = null)
+            }
             runCatching {
                 sessionManager.testConnection(profile, password) { user ->
                     repository.discover(profile, user)
@@ -187,13 +195,22 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
                 .onSuccess { snapshot ->
                     _state.update {
                         it.copy(
-                            loading = false,
+                            testingConnection = false,
                             statusMessage = "Connected • ${snapshot.cameras.size} cameras",
                             errorMessage = null,
                         )
                     }
                 }
-                .onFailure(::showFailure)
+                .onFailure { error ->
+                    logger.warning("Frigate operation failed", error)
+                    _state.update {
+                        it.copy(
+                            testingConnection = false,
+                            statusMessage = "Connection failed",
+                            errorMessage = error.toOpahFailure().userMessage,
+                        )
+                    }
+                }
         }
     }
 
@@ -834,6 +851,26 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
                 savedSessionRecoveryAvailable = false,
             )
         }
+        consumePendingLiveCamera()
+    }
+
+    // Called from MainActivity for a launch (cold start or singleTask redelivery via
+    // onNewIntent) that asks to jump straight into one camera's fullscreen live view,
+    // e.g. from a TV remote automation shortcut. If we're not connected yet, or the
+    // camera list hasn't loaded, the request is remembered and consumed once it has.
+    fun requestLiveCamera(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return
+        pendingLiveCameraName = trimmed
+        consumePendingLiveCamera()
+    }
+
+    private fun consumePendingLiveCamera() {
+        val name = pendingLiveCameraName ?: return
+        val camera = _state.value.snapshot?.cameras?.firstOrNull { it.name.equals(name, ignoreCase = true) }
+            ?: return
+        pendingLiveCameraName = null
+        playAutomatic(camera)
     }
 
     private fun startEnrichment(profile: ConnectionProfile, bootstrap: DiscoveryBootstrap) {

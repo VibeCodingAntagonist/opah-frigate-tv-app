@@ -5,6 +5,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -20,6 +21,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,9 +44,11 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -68,6 +72,10 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.yield
+
+// Lets a ProductionTvInput that just advanced focus via Tab/keyboard-Next tell the field it
+// landed on to resume editing immediately, instead of requiring a second remote-OK/click.
+internal val LocalAdvanceIntoEditing = compositionLocalOf { mutableStateOf(false) }
 
 @Composable
 internal fun FocusCard(
@@ -215,13 +223,26 @@ internal fun ProductionTvInput(
     requestInitialFocus: Boolean = false,
 ) {
     var focused by remember { mutableStateOf(false) }
-    var editing by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf(requestInitialFocus) }
     var pendingMove by remember { mutableStateOf<FocusDirection?>(null) }
+    var pendingAdvanceEditing by remember { mutableStateOf(false) }
     var returnToNavigation by remember { mutableStateOf(false) }
     val navigationFocusRequester = remember { FocusRequester() }
     val editorFocusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val advanceIntoEditing = LocalAdvanceIntoEditing.current
+
+    // Level-triggered rather than event-triggered: reacts whenever focus and a pending advance
+    // signal are simultaneously true, regardless of which one became true first. A one-shot
+    // check inside onFocusChanged can miss the signal depending on exact event ordering.
+    LaunchedEffect(focused, advanceIntoEditing.value) {
+        if (focused && enabled && advanceIntoEditing.value) {
+            advanceIntoEditing.value = false
+            returnToNavigation = false
+            editing = true
+        }
+    }
 
     LaunchedEffect(requestInitialFocus, enabled, editing, pendingMove) {
         if (!enabled) return@LaunchedEffect
@@ -229,12 +250,21 @@ internal fun ProductionTvInput(
             editorFocusRequester.requestFocus()
             keyboardController?.show()
         } else {
-            if (requestInitialFocus || returnToNavigation || pendingMove != null) {
+            // requestInitialFocus is intentionally excluded here: it's permanently true for
+            // whichever field asked for it, so including it would make this field re-claim its
+            // own navigation focus every time this effect reruns for any reason — including the
+            // rerun right after it successfully moves focus away — snapping focus straight back.
+            // The initial claim is instead handled by editing's initial value below.
+            if (returnToNavigation || pendingMove != null) {
                 navigationFocusRequester.requestFocus()
             }
             keyboardController?.hide()
             pendingMove?.let { direction ->
                 yield()
+                if (pendingAdvanceEditing) {
+                    advanceIntoEditing.value = true
+                    pendingAdvanceEditing = false
+                }
                 focusManager.moveFocus(direction)
                 pendingMove = null
             }
@@ -242,11 +272,12 @@ internal fun ProductionTvInput(
         }
     }
 
-    fun finishEditing(direction: FocusDirection? = null) {
+    fun finishEditing(direction: FocusDirection? = null, advanceEditing: Boolean = false) {
         editing = false
         pendingMove = direction
         returnToNavigation = true
         keyboardController?.hide()
+        pendingAdvanceEditing = direction != null && advanceEditing
     }
 
     val transformedValue = remember(value, visualTransformation) {
@@ -277,11 +308,26 @@ internal fun ProductionTvInput(
                             }
                             Key.DirectionUp -> focusManager.moveFocus(FocusDirection.Up)
                             Key.DirectionDown -> focusManager.moveFocus(FocusDirection.Down)
+                            Key.Tab -> {
+                                finishEditing(
+                                    if (event.isShiftPressed) FocusDirection.Previous else FocusDirection.Next,
+                                    advanceEditing = true,
+                                )
+                                true
+                            }
                             else -> false
                         }
                     }
                 }
                 .onFocusChanged { focused = it.isFocused }
+                .pointerInput(enabled, editing) {
+                    detectTapGestures {
+                        if (enabled && !editing) {
+                            returnToNavigation = false
+                            editing = true
+                        }
+                    }
+                }
                 .focusable(enabled && !editing)
                 .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(9.dp))
                 .border(
@@ -308,7 +354,7 @@ internal fun ProductionTvInput(
                         imeAction = imeAction,
                     ),
                     keyboardActions = KeyboardActions(
-                        onNext = { finishEditing(FocusDirection.Down) },
+                        onNext = { finishEditing(FocusDirection.Down, advanceEditing = true) },
                         onDone = { finishEditing() },
                     ),
                     cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
@@ -325,11 +371,18 @@ internal fun ProductionTvInput(
                             } else {
                                 when (event.key) {
                                     Key.DirectionUp -> {
-                                        finishEditing(FocusDirection.Up)
+                                        finishEditing(FocusDirection.Up, advanceEditing = true)
                                         true
                                     }
                                     Key.DirectionDown -> {
-                                        finishEditing(FocusDirection.Down)
+                                        finishEditing(FocusDirection.Down, advanceEditing = true)
+                                        true
+                                    }
+                                    Key.Tab -> {
+                                        finishEditing(
+                                            if (event.isShiftPressed) FocusDirection.Previous else FocusDirection.Next,
+                                            advanceEditing = true,
+                                        )
                                         true
                                     }
                                     else -> false

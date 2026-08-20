@@ -39,6 +39,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -220,6 +221,7 @@ internal fun ConnectionSetupScreen(
     onForget: () -> Unit,
 ) {
     val saved = state.savedProfile
+    val busy = state.loading || state.testingConnection
     var serverUrl by rememberSaveable { mutableStateOf(saved?.apiBaseUrl.orEmpty()) }
     var username by rememberSaveable { mutableStateOf(saved?.username.orEmpty()) }
     var password by remember { mutableStateOf("") }
@@ -289,6 +291,8 @@ internal fun ConnectionSetupScreen(
             )
         }
 
+        val advanceIntoEditing = remember { mutableStateOf(false) }
+        CompositionLocalProvider(LocalAdvanceIntoEditing provides advanceIntoEditing) {
         LazyColumn(
             modifier = Modifier
                 .weight(1.28f)
@@ -305,7 +309,7 @@ internal fun ConnectionSetupScreen(
                     value = serverUrl,
                     onValueChange = { serverUrl = it },
                     placeholder = "https://frigate.example:8971",
-                    enabled = !state.loading,
+                    enabled = !busy,
                     keyboardType = KeyboardType.Uri,
                     requestInitialFocus = true,
                 )
@@ -316,7 +320,7 @@ internal fun ConnectionSetupScreen(
                     value = username,
                     onValueChange = { username = it },
                     placeholder = "Frigate user",
-                    enabled = !state.loading,
+                    enabled = !busy,
                 )
             }
             item {
@@ -325,7 +329,7 @@ internal fun ConnectionSetupScreen(
                     value = password,
                     onValueChange = { password = it },
                     placeholder = "Saved securely after Connect",
-                    enabled = !state.loading,
+                    enabled = !busy,
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardType = KeyboardType.Password,
                     imeAction = ImeAction.Done,
@@ -340,7 +344,7 @@ internal fun ConnectionSetupScreen(
                 }
             }
             item {
-                Button(onClick = { advanced = !advanced }, enabled = !state.loading) {
+                Button(onClick = { advanced = !advanced }, enabled = !busy) {
                     Text(if (advanced) "Hide RTSP routing" else "RTSP routing")
                 }
             }
@@ -351,7 +355,7 @@ internal fun ConnectionSetupScreen(
                         value = rtspHost,
                         onValueChange = { rtspHost = it },
                         placeholder = "Defaults to the Frigate API host",
-                        enabled = !state.loading,
+                        enabled = !busy,
                     )
                 }
                 item {
@@ -360,7 +364,7 @@ internal fun ConnectionSetupScreen(
                         value = rtspPort,
                         onValueChange = { rtspPort = it.filter(Char::isDigit) },
                         placeholder = "8554",
-                        enabled = !state.loading,
+                        enabled = !busy,
                         keyboardType = KeyboardType.Number,
                         imeAction = ImeAction.Done,
                     )
@@ -370,14 +374,14 @@ internal fun ConnectionSetupScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     Button(
                         onClick = { onTestConnection(serverUrl, username, password, rtspHost, rtspPort) },
-                        enabled = !state.loading,
+                        enabled = !busy,
                     ) { Text("Test connection") }
                     Button(
                         onClick = { onConnect(serverUrl, username, password, rtspHost, rtspPort) },
-                        enabled = !state.loading,
+                        enabled = !busy,
                     ) { Text("Connect") }
                     if (saved != null) {
-                        Button(onClick = onForget, enabled = !state.loading) { Text("Forget server") }
+                        Button(onClick = onForget, enabled = !busy) { Text("Forget server") }
                     }
                 }
             }
@@ -395,6 +399,7 @@ internal fun ConnectionSetupScreen(
                     }
                 }
             }
+        }
         }
     }
 }
@@ -891,6 +896,8 @@ internal fun SettingsScreen(
         }
         item {
             SettingsSection("RTSP routing", "Change the live-stream route without signing in again.") {
+                val advanceIntoEditing = remember { mutableStateOf(false) }
+                CompositionLocalProvider(LocalAdvanceIntoEditing provides advanceIntoEditing) {
                 ProductionTvInput(
                     label = "RTSP host override (optional)",
                     value = rtspHost,
@@ -907,6 +914,7 @@ internal fun SettingsScreen(
                     keyboardType = KeyboardType.Number,
                     imeAction = ImeAction.Done,
                 )
+                }
                 Button(onClick = { onUpdateRtspRoute(rtspHost, rtspPort) }) { Text("Save RTSP route") }
             }
         }

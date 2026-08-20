@@ -1,6 +1,7 @@
 package app.opah.tv
 
 import android.app.PictureInPictureParams
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
@@ -28,6 +29,7 @@ class MainActivity : ComponentActivity() {
         val documentationSettingsPage = intent.documentationExtra(EXTRA_DOCUMENTATION_SETTINGS_PAGE)
         val documentationInformationTab = intent.documentationExtra(EXTRA_DOCUMENTATION_INFORMATION_TAB)
         if (BuildConfig.DOCUMENTATION_MODE) viewModel.setDocumentationScenario(documentationScenario)
+        resolveLiveCameraName(intent)?.let(viewModel::requestLiveCamera)
         setContent {
             OpahApp(
                 viewModel = viewModel,
@@ -40,6 +42,19 @@ class MainActivity : ComponentActivity() {
                 initialInformationTabName = documentationInformationTab,
             )
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        resolveLiveCameraName(intent)?.let(viewModel::requestLiveCamera)
+    }
+
+    private fun resolveLiveCameraName(intent: Intent): String? {
+        intent.getStringExtra(EXTRA_LIVE_CAMERA)?.let { return it }
+        val uri = intent.data ?: return null
+        if (uri.scheme != "opah" || uri.host != "live") return null
+        return uri.lastPathSegment
     }
 
     private fun reportFullyDrawnOnce() {
@@ -102,5 +117,6 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_DOCUMENTATION_DESTINATION = "documentationDestination"
         const val EXTRA_DOCUMENTATION_SETTINGS_PAGE = "documentationSettingsPage"
         const val EXTRA_DOCUMENTATION_INFORMATION_TAB = "documentationInformationTab"
+        const val EXTRA_LIVE_CAMERA = "camera"
     }
 }
