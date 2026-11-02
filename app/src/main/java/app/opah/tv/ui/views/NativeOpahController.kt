@@ -3789,6 +3789,7 @@ internal class NativeOpahController(
         val surface = NativeMonitorSurface(
             activity = activity,
             initialState = monitor,
+            prepareHttpLive = { viewModel.prepareMonitorHttpLive(it) },
             imageLoadedAtMillis = { cameraName -> viewModel.cachedCameraImage(cameraName)?.loadedAtMillis },
             cachedBitmap = { cameraName -> viewModel.cachedCameraImage(cameraName)?.bitmap },
             refreshBitmap = { cameraName, height ->
@@ -3813,8 +3814,7 @@ internal class NativeOpahController(
 
     private fun showPlayback(state: Phase0UiState) {
         val request = requireNotNull(state.playback)
-        val surfaceKey = "playback:${request.liveCompatibilityRequestId ?: request.uri}:" +
-            "${request.activityItemId}:${request.compatibilityTestVideoOnly}"
+        val surfaceKey = app.opah.tv.playback.playbackSurfaceKey(request)
         val controls = playbackControls(state, request)
         val actionMessage = state.review.actionErrorFor(request.activityItemId)?.message
             ?: state.review.playbackNavigationMessage
@@ -3865,6 +3865,8 @@ internal class NativeOpahController(
         val surface = NativePlaybackSurface(
             activity = activity,
             request = displayRequest,
+            authenticatedLive = app.opah.tv.playback.useAuthenticatedLive(request, state.activeProfile?.apiBaseUrl),
+            prepareHttpLive = viewModel::prepareMonitorHttpLive,
             preferRtpTcp = state.settings.preferRtpTcp,
             startMuted = state.settings.startLiveMuted,
             diagnosticsEnabled = state.settings.diagnosticsEnabled,
@@ -4380,7 +4382,7 @@ internal class NativeOpahController(
             root.navigationOpen -> root.closeNavigation()
             currentState.tvAlertPrivacyGateOpen -> viewModel.cancelTvAlertPrivacyGate()
             currentState.playback != null -> if (activePlayback?.dismissPlaybackOsd() != true) viewModel.closePlayback()
-            currentState.monitorMode != null -> if (activeMonitor?.dismissPlaybackOsd() != true) viewModel.closeMonitorMode()
+            currentState.monitorMode != null -> if (activeMonitor?.handlePlaybackBack() != true) viewModel.closeMonitorMode()
             currentState.cameraGroupView != null -> if (activeCameraGroup?.dismissPlaybackOsd() != true) viewModel.closeCameraGroup()
             currentState.ptz.cameraName != null -> viewModel.closePtzControls()
             else -> {

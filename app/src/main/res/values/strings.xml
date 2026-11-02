@@ -46,4 +46,11 @@
     <string name="native_high_contrast_state">High contrast   %1$s</string>
     <string name="native_extra_rounding_state">Extra rounding   %1$s</string>
     <string name="native_reduce_transparency_state">Reduce transparency   %1$s</string>
+    <string name="native_https_cleanup_failed">Playback cleanup incomplete; restart Opah</string>
+    <string name="native_https_unavailable">HTTPS stream unavailable or access denied</string>
+    <string name="native_https_connecting">Connecting HTTPS video</string>
+    <string name="native_https_busy">Player busy or access changed; Back to retry</string>
+    <string name="native_https_setup_failed">Player setup failed; restart Opah</string>
+    <string name="native_https_failed">HTTPS playback failed; Back to retry</string>
+    <string name="native_https_retry_detail">%1$s; Back to retry</string>
 </resources>

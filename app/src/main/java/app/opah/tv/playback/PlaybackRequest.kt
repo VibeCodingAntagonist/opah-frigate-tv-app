@@ -23,6 +23,8 @@ data class PlaybackRequest(
     val recordingSaveKey: String? = null,
     val returnToLiveCameraName: String? = null,
     val stretchPreferenceKey: String? = cameraName,
+    val liveStreamName: String? = null,
+    val httpsLiveRequestId: String? = null,
 )
 
 const val BIRDSEYE_STRETCH_PREFERENCE_KEY = "__opah_birdseye__"
@@ -31,3 +33,8 @@ enum class PlaybackKind {
     LIVE,
     RECORDED,
 }
+
+/** Opaque HTTPS session identity prevents camera switches from reusing the prior surface. */
+internal fun playbackSurfaceKey(request: PlaybackRequest): String =
+    "playback:${request.httpsLiveRequestId ?: request.liveCompatibilityRequestId ?: request.uri}:" +
+        "${request.activityItemId}:${request.compatibilityTestVideoOnly}"

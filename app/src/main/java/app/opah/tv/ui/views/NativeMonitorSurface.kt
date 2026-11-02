@@ -17,6 +17,13 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.media3.common.Player
+import androidx.media3.common.PlaybackException
+import app.opah.tv.playback.AuthenticatedHttpLive
+import app.opah.tv.playback.HttpsLivePlayer
+import app.opah.tv.playback.LivePlaybackOptions
+import app.opah.tv.playback.liveFailureStatus
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -31,6 +38,11 @@ import app.opah.tv.playback.compatibility.PlaybackCompatibilityState
 import app.opah.tv.playback.compatibility.PlaybackResult
 import app.opah.tv.playback.media3.PlayerViewMedia3VideoOutputTarget
 import app.opah.tv.playback.media3.SingleLivePlaybackRequestId
+import app.opah.tv.playback.media3.ProcessMedia3VideoOutputRegistry
+import app.opah.tv.playback.media3.awaitExclusiveVideoOutput
+import app.opah.tv.playback.compatibility.PlaybackAttemptId
+import app.opah.tv.playback.compatibility.PlaybackSessionId
+import java.util.UUID
 import app.opah.tv.ui.MonitorModeUiState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -59,6 +71,7 @@ internal class NativeMonitorSurface(
     private val onExitMinutes: (Int?) -> Unit,
     private val onBack: () -> Unit,
     private val imageLoadedAtMillis: (String) -> Long? = { null },
+    private val prepareHttpLive: (String) -> AuthenticatedHttpLive? = { null },
 ) : FrameLayout(activity) {
     private val application = activity.application as OpahApplication
     private val visualHost = FrameLayout(activity)
@@ -74,6 +87,7 @@ internal class NativeMonitorSurface(
     private val audioButton: TextView
     private val awakeButton: TextView
     private val exitButton: TextView
+    private val gridButton: TextView
     private var state = initialState
     private var visualKey: String? = null
     private var visualJob: Job? = null
@@ -83,6 +97,19 @@ internal class NativeMonitorSurface(
     private var heldKeyCode: Int? = null
     private var lastControlKey: String? = null
     private var closed = false
+    private var pinnedCamera: String? = null
+    private var pinnedStatus = "Connecting HTTPS video"
+    private var httpsBackend: HttpsLivePlayer? = null
+    private var httpsView: PlayerView? = null
+    private val lifecycleObserver = LifecycleEventObserver { _, event ->
+        if (event == Lifecycle.Event.ON_STOP) {
+            visualJob?.cancel()
+            stopHttpsLive()
+            visualKey = null
+        } else if (event == Lifecycle.Event.ON_START && !closed) {
+            update(state)
+        }
+    }
 
     init {
         setBackgroundColor(Color.BLACK)
@@ -124,11 +151,17 @@ internal class NativeMonitorSurface(
         controls.addView(controlButton("Exit", R.drawable.ic_chevron_left, onBack))
         controls.addView(panelLabel("View"))
         MonitorPreset.entries.forEach { preset ->
-            val button = controlButton(preset.displayLabel()) { onPreset(preset) }
+            val button = controlButton(preset.displayLabel()) {
+                pinnedCamera = null
+                update(state)
+                onPreset(preset)
+            }
             presetButtons[preset] = button
             controls.addView(button)
         }
         controls.addView(divider())
+        gridButton = controlButton("Show grid") { clearPinnedCamera() }
+        controls.addView(gridButton)
         audioButton = controlButton("", R.drawable.ic_volume_off) { onAudioEnabled(!state.audioEnabled) }
         awakeButton = controlButton("") { onKeepScreenAwake(!state.keepScreenAwake) }
         exitButton = controlButton("") { onExitMinutes(nextNativeMonitorExitMinutes(state.exitAfterMinutes)) }
@@ -153,6 +186,7 @@ internal class NativeMonitorSurface(
                 bottomMargin = activity.dp(24)
             },
         )
+        activity.lifecycle.addObserver(lifecycleObserver)
         update(initialState)
         controls.post {
             presetButtons[state.preset]?.requestFocus()
@@ -161,10 +195,17 @@ internal class NativeMonitorSurface(
     }
 
     fun update(updated: MonitorModeUiState) {
+        if (closed) return
         state = updated
+        val pinned = updated.cameras.firstOrNull {
+            it.name == pinnedCamera && it.name in updated.visibleCameraIds && updated.preset == MonitorPreset.FIXED
+        }
+        if (pinned == null) pinnedCamera = null
+        gridButton.visibility = if (pinned != null) View.VISIBLE else View.GONE
         keepScreenOn = updated.keepScreenAwake
         title.text = updated.title
-        status.text = monitorStatus(updated)
+        status.text = if (pinned != null) "Pinned ${pinned.displayName} · $pinnedStatus" else monitorStatus(updated)
+        httpsBackend?.player?.volume = if (updated.audioEnabled) 1f else 0f
         recoveryStatus.text = "Reconnecting · Showing previews"
         recoveryStatus.visibility = if (updated.arbitration.phase == MonitorPhase.RECOVERING) View.VISIBLE else View.GONE
         presetButtons.forEach { (preset, button) -> button.isSelected = preset == updated.preset }
@@ -188,6 +229,7 @@ internal class NativeMonitorSurface(
             ?.let { id -> updated.cameras.firstOrNull { it.name == id } }
         val visible = updated.cameras.filter { it.name in updated.visibleCameraIds }
         val nextVisualKey = when {
+            pinned != null -> "https:${pinned.name}"
             promoted != null &&
                 updated.arbitration.promotion.presentation == MonitorPresentationKind.LIVE &&
                 updated.liveCompatibilityRequestId != null ->
@@ -197,14 +239,17 @@ internal class NativeMonitorSurface(
             else -> "grid:${visible.joinToString { it.name }}"
         }
         if (nextVisualKey == visualKey) return
+        if (!activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
         val focusedTileKey = visualHost.findFocus()?.tag as? String
         visualKey = nextVisualKey
         visualJob?.cancel()
+        stopHttpsLive()
         visualJob = null
         clearPreviewBindings()
         visualHost.removeAllViews()
         cameraLabels.clear()
         when {
+            pinned != null -> showHttpsLive(pinned)
             nextVisualKey.startsWith("live:") -> showLive(requireNotNull(updated.liveCompatibilityRequestId), !updated.audioEnabled)
             promoted != null -> showSnapshot(promoted)
             patrol != null -> showSnapshot(patrol)
@@ -224,6 +269,8 @@ internal class NativeMonitorSurface(
 
     fun close() {
         closed = true
+        activity.lifecycle.removeObserver(lifecycleObserver)
+        stopHttpsLive()
         chromeHideJob?.cancel()
         chromeHideJob = null
         visualJob?.cancel()
@@ -242,12 +289,29 @@ internal class NativeMonitorSurface(
         return true
     }
 
+    private fun clearPinnedCamera() {
+        pinnedCamera = null
+        update(state)
+        showChrome(requestFocus = true)
+    }
+
+    /** Used both by the TV key dispatcher and Android's system Back callback. */
+    fun handlePlaybackBack(): Boolean {
+        if (closed) return false
+        if (dismissPlaybackOsd()) return true
+        if (pinnedCamera == null) return false
+        clearPinnedCamera()
+        return true
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (closed) return true
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 &&
-                !event.isCanceled && !dismissPlaybackOsd()
-            ) onBack()
+                !event.isCanceled && !handlePlaybackBack()
+            ) {
+                onBack()
+            }
             return true
         }
         if (event.keyCode == revealKeyCode) {
@@ -271,6 +335,115 @@ internal class NativeMonitorSurface(
             scheduleChromeHide()
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    private fun stopHttpsLive() {
+        val backend = httpsBackend
+        httpsBackend = null
+        httpsView?.player = null
+        httpsView?.visibility = View.INVISIBLE
+        httpsView = null
+        if (backend != null && !backend.close()) {
+            pinnedStatus = "Playback cleanup incomplete; restart Opah"
+            status.text = pinnedStatus
+        }
+    }
+
+    private fun showHttpsLive(camera: Camera) {
+        val request = prepareHttpLive(camera.name)
+        fun report(message: String) {
+            pinnedStatus = message
+            status.text = "Pinned ${camera.displayName} · $message"
+        }
+        if (request == null || !request.isAuthorized()) {
+            report("HTTPS stream unavailable or access denied; Back to retry")
+            return
+        }
+        report("Waiting for previous player to close")
+        val view = PlayerView(activity).apply {
+            useController = false
+            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+            setKeepContentOnPlayerReset(false)
+        }
+        visualHost.addView(view, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        val output = PlayerViewMedia3VideoOutputTarget(view, {}, {})
+        val attempt = PlaybackAttemptId(PlaybackSessionId("https-${UUID.randomUUID()}"), 1)
+        visualJob = activity.lifecycleScope.launch {
+            val acquired = awaitExclusiveVideoOutput(
+                ProcessMedia3VideoOutputRegistry.instance, output, attempt, request.isAuthorized,
+            )
+            if (acquired == null) {
+                report("Player busy or access changed; Back to retry")
+                return@launch
+            }
+            if (!request.isAuthorized()) {
+                acquired.finish { true } // Nothing was constructed or attached.
+                report("Access changed; playback stopped")
+                return@launch
+            }
+            val backend = try {
+                HttpsLivePlayer(activity, application.container.httpClient, acquired)
+            } catch (_: Exception) {
+                // Without a returned player, construction cleanup cannot be proven.
+                acquired.finish { false }
+                report("Player setup failed; restart Opah")
+                return@launch
+            }
+            httpsBackend = backend
+            httpsView = view
+            var firstFrame = false
+            try { backend.player.addListener(object : Player.Listener {
+                override fun onRenderedFirstFrame() {
+                    if (httpsBackend !== backend) return
+                    if (!request.isAuthorized()) {
+                        report("Access changed; playback stopped")
+                        stopHttpsLive()
+                        return
+                    }
+                    firstFrame = true
+                    report("Live HTTPS video")
+                }
+                override fun onPlayerError(error: PlaybackException) {
+                    if (httpsBackend !== backend) return
+                    report("HTTPS playback failed: ${liveFailureStatus(error) ?: error.errorCodeName}; Back to retry")
+                    stopHttpsLive()
+                }
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (httpsBackend !== backend) return
+                    if (playbackState == Player.STATE_ENDED) {
+                        report("Live connection ended; Back to retry")
+                        stopHttpsLive()
+                    }
+                }
+            }) } catch (_: Exception) {
+                report("Player listener setup failed; Back to retry")
+                stopHttpsLive()
+                return@launch
+            }
+            val started = android.os.SystemClock.elapsedRealtime()
+            try {
+                report("Connecting HTTPS video")
+                backend.prepare(request.uri, LivePlaybackOptions(videoOnly = !state.audioEnabled))
+                while (isActive && httpsBackend === backend) {
+                    if (!request.isAuthorized()) {
+                        report("Access changed; playback stopped")
+                        break
+                    }
+                    if (!firstFrame && android.os.SystemClock.elapsedRealtime() - started >= 30_000L) {
+                        report("HTTPS first-frame timeout; Back to retry")
+                        break
+                    }
+                    delay(250L)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                report("HTTPS player setup failed; Back to retry")
+            } finally {
+                if (httpsBackend === backend) stopHttpsLive()
+                else backend.close()
+            }
+        }
     }
 
     private fun showLive(requestId: String, videoOnly: Boolean) {
@@ -395,7 +568,13 @@ internal class NativeMonitorSurface(
                 bottomMargin = activity.dp(10)
             },
         )
-        setOnClickListener { onManualCamera(camera.name) }
+        setOnClickListener {
+            if (state.preset == MonitorPreset.FIXED) {
+                pinnedCamera = camera.name
+                update(state)
+                showChrome(requestFocus = true)
+            } else onManualCamera(camera.name)
+        }
         onFocusChangeListener = View.OnFocusChangeListener { _, focused ->
             cameraLabel.visibility = if (focused || !chromeVisible) View.VISIBLE else View.GONE
         }

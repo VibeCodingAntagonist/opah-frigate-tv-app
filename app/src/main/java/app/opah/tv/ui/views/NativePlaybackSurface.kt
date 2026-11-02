@@ -24,6 +24,16 @@ import androidx.core.view.isEmpty
 import androidx.core.view.isNotEmpty
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import app.opah.tv.playback.AuthenticatedHttpLive
+import app.opah.tv.playback.HttpsLivePlayer
+import app.opah.tv.playback.liveFailureStatus
+import app.opah.tv.playback.compatibility.PlaybackAttemptId
+import app.opah.tv.playback.compatibility.PlaybackSessionId
+import app.opah.tv.playback.media3.ProcessMedia3VideoOutputRegistry
+import app.opah.tv.playback.media3.awaitExclusiveVideoOutput
+import java.util.UUID
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -155,6 +165,8 @@ private class NativePlaybackOverlayColumn @JvmOverloads constructor(
 internal class NativePlaybackSurface(
     private val activity: ComponentActivity,
     val request: PlaybackRequest,
+    private val authenticatedLive: Boolean = false,
+    private val prepareHttpLive: (String, String?) -> AuthenticatedHttpLive? = { _, _ -> null },
     private val preferRtpTcp: Boolean,
     startMuted: Boolean,
     private val diagnosticsEnabled: Boolean = false,
@@ -200,7 +212,7 @@ internal class NativePlaybackSurface(
     private val status = TextView(activity).apply {
         setTextColor(0xFFD7E1EE.toInt())
         textSize = 13f
-        maxLines = 2
+        maxLines = 10
         text = request.detail ?: if (request.kind == PlaybackKind.LIVE) "Live" else "Recording"
         setShadowLayer(5f, 0f, 2f, Color.BLACK)
     }
@@ -312,6 +324,7 @@ internal class NativePlaybackSurface(
         maxWidth = activity.dp(520)
         visibility = View.GONE
     }
+    private var httpsBackend: HttpsLivePlayer? = null
     private var player: ExoPlayer? = null
     private var liveJob: Job? = null
     private var progressJob: Job? = null
@@ -339,7 +352,7 @@ internal class NativePlaybackSurface(
     private var closed = false
     private var feedbackPending = initialFeedbackPending
     private val dynamicButtons = linkedMapOf<String, TextView>()
-    private val coordinatorOwned = request.kind == PlaybackKind.LIVE && request.liveCompatibilityRequestId != null
+    private val coordinatorOwned = authenticatedLive || request.kind == PlaybackKind.LIVE && request.liveCompatibilityRequestId != null
     private val playPause = controlButton("Pause", R.drawable.ic_pause, "Pause playback", emphasized = true) {
         togglePlayback()
     }
@@ -447,6 +460,8 @@ internal class NativePlaybackSurface(
         )
         if (documentationPlayback) {
             startDocumentationPlayback()
+        } else if (authenticatedLive) {
+            startHttpsPlayback()
         } else if (request.kind == PlaybackKind.LIVE && request.liveCompatibilityRequestId != null) {
             startCompatibilityPlayback(request.liveCompatibilityRequestId)
         } else {
@@ -541,6 +556,7 @@ internal class NativePlaybackSurface(
         liveJob = null
         progressJob?.cancel()
         progressJob = null
+        stopHttpsPlayback()
         playerView.player = null
         if (!coordinatorOwned) player?.release()
         player = null
@@ -806,6 +822,84 @@ internal class NativePlaybackSurface(
         heldKeys.isEmpty() && revealKey == null && selectTarget == null && !feedbackPending &&
         hasWindowFocus() && player?.isPlaying == true
 
+    private fun stopHttpsPlayback() {
+        val backend = httpsBackend ?: return
+        httpsBackend = null
+        if (!backend.close()) status.setText(R.string.native_https_cleanup_failed)
+    }
+
+    private fun startHttpsPlayback() {
+        retry.visibility = View.GONE
+        liveJob = activity.lifecycleScope.launch {
+            activity.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                val live = request.cameraName?.let { prepareHttpLive(it, request.liveStreamName) }
+                if (closed || live == null || !live.isAuthorized()) {
+                    status.setText(R.string.native_https_unavailable)
+                    return@repeatOnLifecycle
+                }
+                status.setText(R.string.native_https_connecting)
+                val target = PlayerViewMedia3VideoOutputTarget(playerView, ::attachPlayer) {
+                    if (player === it) detachPlayer()
+                }
+                val attempt = PlaybackAttemptId(PlaybackSessionId("https-${UUID.randomUUID()}"), 1)
+                val lease = awaitExclusiveVideoOutput(
+                    ProcessMedia3VideoOutputRegistry.instance, target, attempt,
+                    { !closed && live.isAuthorized() },
+                )
+                if (lease == null) {
+                    status.setText(R.string.native_https_busy)
+                    return@repeatOnLifecycle
+                }
+                val backend = try {
+                    HttpsLivePlayer(activity, application.container.httpClient, lease)
+                } catch (_: Exception) {
+                    lease.finish { false }
+                    status.setText(R.string.native_https_setup_failed)
+                    return@repeatOnLifecycle
+                }
+                httpsBackend = backend
+                var firstFrame = false
+                var failure: String? = null
+                val listener = object : Player.Listener {
+                    override fun onRenderedFirstFrame() { firstFrame = true }
+                    override fun onPlayerError(error: PlaybackException) {
+                        failure = "HTTPS playback failed: ${liveFailureStatus(error) ?: error.errorCodeName}"
+                    }
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (playbackState == Player.STATE_ENDED) failure = "Live connection ended"
+                    }
+                }
+                try {
+                    backend.player.addListener(listener)
+                    failure = app.opah.tv.playback.runAuthorizedLiveSession(
+                        authorized = { !closed && live.isAuthorized() },
+                        start = { backend.prepare(live.uri, LivePlaybackOptions(videoOnly = muted)) },
+                        firstFrame = { firstFrame },
+                        failure = { failure },
+                        close = {
+                            if (httpsBackend === backend) {
+                                backend.player.removeListener(listener)
+                                stopHttpsPlayback()
+                            }
+                        },
+                    )
+                    failure?.let { status.text = activity.getString(R.string.native_https_retry_detail, it) }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    failure = "HTTPS playback failed"
+                    status.setText(R.string.native_https_failed)
+                } finally {
+                    if (httpsBackend === backend) {
+                        backend.player.removeListener(listener)
+                        failure?.let { status.text = activity.getString(R.string.native_https_retry_detail, it) }
+                        stopHttpsPlayback()
+                    }
+                }
+            }
+        }
+    }
+
     private fun startDirectPlayback() {
         retry.visibility = View.GONE
         status.setText(R.string.native_playback_starting)
@@ -892,7 +986,14 @@ internal class NativePlaybackSurface(
                             is PlaybackResult.UnpersistedLive,
                             -> "Playing with a verified camera setting"
                             is PlaybackResult.Cancelled -> "Compatibility check stopped"
-                            else -> "No reliable playback choice was found"
+                            else -> playbackFailureSummary(state.result) +
+                                "\nTrigger: ${snapshot.diagnosticReleaseTrigger}" +
+                                "\nInitial cleanup: ${snapshot.diagnosticInitialCleanup} (${snapshot.diagnosticCleanupMillis}ms)" +
+                                "\nLatest cleanup: ${snapshot.diagnosticReleaseStage}" +
+                                (snapshot.diagnosticPriorFailure?.let {
+                                    "\nPrior: ${it.category.name} / ${it.phase.name}" +
+                                        "\nCode: ${it.diagnosticCode.name}"
+                                } ?: "\nPrior: not captured")
                         }
                         is PlaybackCompatibilityState.Idle -> "Preparing compatibility check"
                         is PlaybackCompatibilityState.Releasing,
