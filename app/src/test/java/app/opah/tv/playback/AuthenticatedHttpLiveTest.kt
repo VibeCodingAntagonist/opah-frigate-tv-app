@@ -30,15 +30,32 @@ class AuthenticatedHttpLiveTest {
     }
 
     @Test
-    fun normalCameraUsesHttpsEvenWhenCompatibilityRequestExists() {
+    fun defaultPlaybackNeverOptsIntoHttps() {
+        val live = PlaybackRequest("Camera", "", PlaybackKind.LIVE, cameraName = "cam1")
+        assertFalse(useAuthenticatedLive(live, "https://example.test"))
+        assertFalse(useAuthenticatedLive(live.copy(liveCompatibilityRequestId = "rtsp"), "https://example.test"))
+        assertFalse(useAuthenticatedLive(live, "http://example.test"))
+    }
+
+    @Test
+    fun explicitHttpsSessionCannotOverrideDiagnosticsRecordingsOrRtspSession() {
         val live = PlaybackRequest("Camera", "", PlaybackKind.LIVE, cameraName = "cam1",
-            liveCompatibilityRequestId = "opaque")
+            httpsLiveRequestId = "explicit-session")
         assertTrue(useAuthenticatedLive(live, "https://example.test"))
-        assertTrue(useAuthenticatedLive(live.copy(liveCompatibilityRequestId = null), "https://example.test"))
+        assertFalse(useAuthenticatedLive(live.copy(liveCompatibilityRequestId = "rtsp"), "https://example.test"))
         assertFalse(useAuthenticatedLive(live.copy(compatibilityTest = true), "https://example.test"))
         assertFalse(useAuthenticatedLive(live.copy(kind = PlaybackKind.RECORDED), "https://example.test"))
         assertFalse(useAuthenticatedLive(live, "http://example.test"))
         assertFalse(useAuthenticatedLive(live, null))
+        assertFalse(useAuthenticatedLive(live.copy(httpsLiveRequestId = null), "https://example.test"))
+    }
+
+    @Test
+    fun optionIsOnlyOfferedForSupportedHttpsOrigins() {
+        assertTrue(canOfferHttpsLive("https://example.test/frigate/"))
+        for (base in listOf(null, "http://example.test", "https://u:p@example.test", "https://example.test/?x=1")) {
+            assertFalse(canOfferHttpsLive(base))
+        }
     }
 
     @Test

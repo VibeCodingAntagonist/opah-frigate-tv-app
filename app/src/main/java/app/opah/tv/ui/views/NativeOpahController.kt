@@ -816,6 +816,9 @@ internal class NativeOpahController(
                 val camera = state.snapshot?.cameras?.firstOrNull { it.name == cameraName } ?: return
                 val favoriteIndex = state.settings.favoriteCameraNames.indexOf(cameraName)
                 val choices = buildList {
+                    if (app.opah.tv.playback.canOfferHttpsLive(state.activeProfile?.apiBaseUrl) && !BuildConfig.DOCUMENTATION_MODE) {
+                        add(Triple("https-live", "Play using HTTPS", "This session only; requires Frigate HTTPS live streaming"))
+                    }
                     add(Triple("favorite", if (tile.favorite) "Remove favorite" else "Pin as favorite", ""))
                     if (favoriteIndex > 0) add(Triple("earlier", "Move favorite earlier", ""))
                     if (favoriteIndex >= 0 && favoriteIndex < state.settings.favoriteCameraNames.lastIndex) {
@@ -828,6 +831,7 @@ internal class NativeOpahController(
                 }
                 showChoiceDialog(camera.displayName, "Camera options", choices) { choice ->
                     when (choice) {
+                        "https-live" -> viewModel.playUsingHttps(camera)
                         "favorite" -> viewModel.toggleFavoriteCamera(cameraName)
                         "earlier" -> viewModel.moveFavoriteCamera(cameraName, -1)
                         "later" -> viewModel.moveFavoriteCamera(cameraName, 1)
@@ -3789,7 +3793,6 @@ internal class NativeOpahController(
         val surface = NativeMonitorSurface(
             activity = activity,
             initialState = monitor,
-            prepareHttpLive = { viewModel.prepareMonitorHttpLive(it) },
             imageLoadedAtMillis = { cameraName -> viewModel.cachedCameraImage(cameraName)?.loadedAtMillis },
             cachedBitmap = { cameraName -> viewModel.cachedCameraImage(cameraName)?.bitmap },
             refreshBitmap = { cameraName, height ->
@@ -3866,7 +3869,7 @@ internal class NativeOpahController(
             activity = activity,
             request = displayRequest,
             authenticatedLive = app.opah.tv.playback.useAuthenticatedLive(request, state.activeProfile?.apiBaseUrl),
-            prepareHttpLive = viewModel::prepareMonitorHttpLive,
+            prepareHttpLive = viewModel::prepareAuthenticatedHttpLive,
             preferRtpTcp = state.settings.preferRtpTcp,
             startMuted = state.settings.startLiveMuted,
             diagnosticsEnabled = state.settings.diagnosticsEnabled,
@@ -4382,7 +4385,7 @@ internal class NativeOpahController(
             root.navigationOpen -> root.closeNavigation()
             currentState.tvAlertPrivacyGateOpen -> viewModel.cancelTvAlertPrivacyGate()
             currentState.playback != null -> if (activePlayback?.dismissPlaybackOsd() != true) viewModel.closePlayback()
-            currentState.monitorMode != null -> if (activeMonitor?.handlePlaybackBack() != true) viewModel.closeMonitorMode()
+            currentState.monitorMode != null -> if (activeMonitor?.dismissPlaybackOsd() != true) viewModel.closeMonitorMode()
             currentState.cameraGroupView != null -> if (activeCameraGroup?.dismissPlaybackOsd() != true) viewModel.closeCameraGroup()
             currentState.ptz.cameraName != null -> viewModel.closePtzControls()
             else -> {

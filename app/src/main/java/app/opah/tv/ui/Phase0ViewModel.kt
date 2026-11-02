@@ -1622,6 +1622,32 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
             }
     }
 
+    /** Explicit one-session alternative; normal clicks and saved settings remain unchanged. */
+    fun playUsingHttps(camera: Camera) {
+        val current = _state.value
+        val profile = current.activeProfile ?: return
+        if (BuildConfig.DOCUMENTATION_MODE ||
+            !app.opah.tv.playback.canOfferHttpsLive(profile.apiBaseUrl)) return
+        if (issuePrivacyGrant(PrivacySurface.LIVE_PLAYBACK, PrivacyTarget.Camera(camera.name)) == null) return
+        streamSelector.select(camera, current.device?.codecs.orEmpty(), current.settings.streamPreference)
+            .onSuccess { selected ->
+                val live = prepareAuthenticatedHttpLive(camera.name, selected.option.streamName)
+                if (live == null || !live.isAuthorized()) {
+                    _state.update { it.copy(errorMessage = "HTTPS stream unavailable or access denied") }
+                    return@onSuccess
+                }
+                _state.update { it.copy(
+                    playback = PlaybackRequest(
+                        title = camera.displayName, uri = "", kind = PlaybackKind.LIVE,
+                        cameraName = camera.name, liveStreamName = selected.option.streamName,
+                        httpsLiveRequestId = java.util.UUID.randomUUID().toString(),
+                    ),
+                    activeCameraName = camera.name, errorMessage = null,
+                ) }
+            }
+            .onFailure { _state.update { it.copy(errorMessage = "No compatible HTTPS stream") } }
+    }
+
     fun playInstantRewind(cameraName: String) {
         val current = _state.value
         val camera = current.snapshot?.cameras?.firstOrNull { it.name == cameraName } ?: return
@@ -3429,7 +3455,7 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
             ?.let { cameraImageRepository.cached(it, cameraName) }
     }
 
-    internal fun prepareMonitorHttpLive(cameraName: String, preferredStreamName: String? = null): app.opah.tv.playback.AuthenticatedHttpLive? {
+    internal fun prepareAuthenticatedHttpLive(cameraName: String, preferredStreamName: String? = null): app.opah.tv.playback.AuthenticatedHttpLive? {
         val current = _state.value
         val profile = current.activeProfile ?: return null
         val snapshot = current.snapshot ?: return null
@@ -5714,23 +5740,6 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
         compatibilityTestUseSavedStrategyFirst: Boolean = true,
         preferRtpTcpOverride: Boolean? = null,
     ) {
-        val httpsRequest = PlaybackRequest(
-            title = camera.displayName, uri = "", kind = PlaybackKind.LIVE,
-            cameraName = camera.name, liveStreamName = option.streamName,
-            httpsLiveRequestId = java.util.UUID.randomUUID().toString(),
-            compatibilityTest = compatibilityTest,
-        )
-        if (!BuildConfig.DOCUMENTATION_MODE &&
-            app.opah.tv.playback.useAuthenticatedLive(httpsRequest, profile.apiBaseUrl)) {
-            // Do not prepare an RTSP capability for an HTTPS-only camera session.
-            val live = prepareMonitorHttpLive(camera.name, option.streamName)
-            if (live == null || !live.isAuthorized()) {
-                _state.update { it.copy(errorMessage = "HTTPS stream unavailable or access denied") }
-                return
-            }
-            _state.update { it.copy(playback = httpsRequest, activeCameraName = camera.name, errorMessage = null) }
-            return
-        }
         if (!BuildConfig.DOCUMENTATION_MODE) {
             val current = _state.value
             val snapshot = current.snapshot

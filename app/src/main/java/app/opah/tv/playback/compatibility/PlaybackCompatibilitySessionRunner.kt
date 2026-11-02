@@ -576,11 +576,6 @@ data class PlaybackCompatibilitySessionSnapshot(
     val snapshotPresentationActive: Boolean,
     val lastContentAuthorization: PlaybackExecutionAuthorization?,
     val cleanupHandedOff: Boolean,
-    val diagnosticPriorFailure: ClassifiedPlaybackFailure? = null,
-    val diagnosticReleaseStage: String = "NOT_STARTED",
-    val diagnosticReleaseTrigger: String = "NOT_CAPTURED",
-    val diagnosticInitialCleanup: String = "NOT_STARTED",
-    val diagnosticCleanupMillis: Long = 0,
 )
 
 /**
@@ -629,9 +624,6 @@ class PlaybackCompatibilitySessionRunner(
     private var lastContentAuthorization: PlaybackExecutionAuthorization? = null
     private var appliedExternalCancellation: ExternalCancellation? = null
     private var cleanupHandedOff: Boolean = false
-    private var diagnosticPriorFailure: ClassifiedPlaybackFailure? = null
-    private var diagnosticReleaseStage: String = "NOT_STARTED"
-    private val releaseDiagnostics = PlaybackReleaseDiagnostics()
     private val mutableSnapshots = MutableStateFlow(snapshotUnsafe())
 
     /**
@@ -796,13 +788,7 @@ class PlaybackCompatibilitySessionRunner(
         while (events.isNotEmpty()) {
             val event = events.removeFirst()
             cancelSatisfiedDeadline(event)
-            if (event is PlaybackEvent.AttemptFailed) diagnosticPriorFailure = event.failure
             val transition = reducer.reduce(state, event)
-            if (state !is PlaybackCompatibilityState.Releasing &&
-                transition.state is PlaybackCompatibilityState.Releasing
-            ) {
-                releaseDiagnostics.begin(playbackReleaseTrigger(event))
-            }
             state = transition.state
             callbackMailbox.acceptOnly(state.correlatedAttemptId())
             val generatedEvents = ArrayList<PlaybackEvent>()
@@ -1103,19 +1089,13 @@ class PlaybackCompatibilitySessionRunner(
         attemptId: PlaybackAttemptId,
         force: Boolean,
     ): List<PlaybackEvent> {
-        val cleanupStarted = now()
-        val cleanupDeadline = safeRunnerAdd(cleanupStarted, releaseOperationTimeoutMillis)
-        diagnosticReleaseStage = "STARTED"
+        val cleanupDeadline = safeRunnerAdd(now(), releaseOperationTimeoutMillis)
         val active = activeAttempt
         if (active == null) {
-            diagnosticReleaseStage = "NO_ACTIVE_ATTEMPT"
-            releaseDiagnostics.completed(force, diagnosticReleaseStage, now() - cleanupStarted)
             cancelAllDeadlines(attemptId, cleanupDeadline)
             return if (force) emptyList() else listOf(PlaybackEvent.AttemptReleased(attemptId, now()))
         }
         if (active.attemptId != attemptId) {
-            diagnosticReleaseStage = "ATTEMPT_ID_MISMATCH"
-            releaseDiagnostics.completed(force, diagnosticReleaseStage, now() - cleanupStarted)
             cancelAllDeadlines(attemptId, cleanupDeadline)
             return if (force) emptyList() else {
                 listOf(PlaybackEvent.AttemptReleaseFailed(attemptId, now()))
@@ -1127,7 +1107,6 @@ class PlaybackCompatibilitySessionRunner(
         val remainingMillis = (cleanupDeadline - now()).coerceAtLeast(0L)
         withTimeoutOrNull(remainingMillis) {
             if (!backendReleased) {
-                diagnosticReleaseStage = "BACKEND_PENDING"
                 try {
                     backendReleased = backend.release(
                         attemptId,
@@ -1141,14 +1120,8 @@ class PlaybackCompatibilitySessionRunner(
                 }
             }
             if (backendReleased && !leaseReleased) {
-                diagnosticReleaseStage = "LEASE_PENDING"
                 leaseReleased = releaseLeaseAdapter(attemptId, requireNotNull(active.lease))
             }
-        }
-        diagnosticReleaseStage = when {
-            !backendReleased -> "BACKEND_NOT_RELEASED"
-            !leaseReleased -> "LEASE_NOT_RELEASED"
-            else -> "RELEASED"
         }
 
         activeAttempt = if (backendReleased && leaseReleased) {
@@ -1161,7 +1134,6 @@ class PlaybackCompatibilitySessionRunner(
             )
         }
         cancelAllDeadlines(attemptId, cleanupDeadline)
-        releaseDiagnostics.completed(force, diagnosticReleaseStage, now() - cleanupStarted)
         if (force) return emptyList()
 
         return if (backendReleased && leaseReleased) {
@@ -1697,11 +1669,6 @@ class PlaybackCompatibilitySessionRunner(
             snapshotPresentationActive = activeSnapshotPresentation != null,
             lastContentAuthorization = lastContentAuthorization,
             cleanupHandedOff = cleanupHandedOff,
-            diagnosticPriorFailure = diagnosticPriorFailure,
-            diagnosticReleaseStage = diagnosticReleaseStage,
-            diagnosticReleaseTrigger = releaseDiagnostics.trigger,
-            diagnosticInitialCleanup = releaseDiagnostics.initialCleanup,
-            diagnosticCleanupMillis = releaseDiagnostics.cleanupMillis,
         )
 
     private fun publishSnapshot() {

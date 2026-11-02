@@ -31,12 +31,14 @@ internal fun httpLiveUri(baseUrl: String, streamName: String): String? {
         .build().toString()
 }
 
-/** Normal camera viewing on an HTTPS profile must not silently fall back to RTSP.
- * Explicit compatibility diagnostics and recorded video retain their existing paths.
- */
+/** Only an explicit session request opts into HTTPS. Defaults/RTSP diagnostics are unchanged. */
+internal fun canOfferHttpsLive(baseUrl: String?): Boolean =
+    baseUrl != null && httpLiveUri(baseUrl, "probe") != null
+
 internal fun useAuthenticatedLive(request: PlaybackRequest, baseUrl: String?): Boolean =
     request.kind == PlaybackKind.LIVE && !request.compatibilityTest &&
-        baseUrl?.toHttpUrlOrNull()?.scheme == "https"
+        request.httpsLiveRequestId != null && request.liveCompatibilityRequestId == null &&
+        canOfferHttpsLive(baseUrl)
 
 /** Explicit stream choice is never silently replaced when discovery or access changes. */
 internal fun selectHttpLiveStream(cameraName: String, available: List<String>, preferred: String?): String? =
