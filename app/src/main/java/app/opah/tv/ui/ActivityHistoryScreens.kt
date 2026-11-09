@@ -569,6 +569,7 @@ internal fun ActivitySearchScreen(
     onFocusRestored: () -> Unit,
     onPage: (ActivityPage) -> Unit,
     onSearch: (String, ActivitySearchFilters) -> Unit,
+    onRepeatSearch: (ActivitySearchFilters) -> Unit,
     onLoadMore: () -> Unit,
     onPlay: (SearchEvent, String) -> Unit,
     cachedBitmap: (SearchEvent) -> Bitmap?,
@@ -794,6 +795,7 @@ internal fun ActivitySearchScreen(
             onApply = { selected ->
                 filters = selected
                 filtersVisible = false
+                if (search.isSimilaritySearch && query.isBlank()) onRepeatSearch(selected)
             },
         )
     }

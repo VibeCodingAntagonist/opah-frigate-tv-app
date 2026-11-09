@@ -10,7 +10,7 @@ internal fun alertSectionForKey(key: String): NativeAlertSection? = when {
     key == "alerts:when" || key.startsWith("alerts:schedule:") || key.startsWith("alerts:snooze") ->
         NativeAlertSection.SCHEDULE
     key.startsWith("alerts:privacy") || key in setOf(
-        "alerts:display", "alerts:duration", "alerts:vertical", "alerts:horizontal", "alerts:image",
+        "alerts:display", "alerts:duration", "alerts:vertical", "alerts:horizontal", "alerts:image", "alerts:interactive",
     ) -> NativeAlertSection.PREVIEW
     key.startsWith("alerts:test:") || key.startsWith("alerts:delivery") ||
         key in setOf("alerts:android", "alerts:overlay") -> NativeAlertSection.DELIVERY

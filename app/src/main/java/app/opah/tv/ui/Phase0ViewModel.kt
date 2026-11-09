@@ -455,6 +455,7 @@ private data class PendingTvAlertOpen(
     val profileKey: String,
     val reviewId: String,
     val actionNonce: String,
+    val preference: app.opah.tv.notifications.TvAlertOpenPreference = app.opah.tv.notifications.TvAlertOpenPreference.DEFAULT,
 )
 
 private data class ActiveBriefingIdentity(
@@ -466,6 +467,9 @@ private data class ActiveBriefingIdentity(
 )
 
 data class Phase0UiState(
+    val notificationPause: app.opah.tv.notifications.NotificationPauseSnapshot = app.opah.tv.notifications.NotificationPauseSnapshot(available = false, paused = true),
+    val notificationPauseBusy: Boolean = false,
+    val notificationPauseError: String? = null,
     val loading: Boolean = true,
     val connectionWorkInProgress: Boolean = false,
     val statusMessage: String = "Starting Opah…",
@@ -598,6 +602,7 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     init {
+        viewModelScope.launch { container.notificationPause.state.collect { pause -> _state.update { it.copy(notificationPause = pause) } } }
         if (BuildConfig.DOCUMENTATION_MODE) {
             _state.value = DocumentationSupport.data.state(null)
         } else {
@@ -934,6 +939,10 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
         testOnly: Boolean,
         onResult: ((Result<String>) -> Unit)? = null,
     ): Job? {
+        if (!container.canManageConnectionSetup()) {
+            onResult?.invoke(Result.failure(IllegalStateException("Unlock settings before changing a connection")))
+            return null
+        }
         if (_state.value.loading) {
             onResult?.invoke(Result.failure(IllegalStateException("Wait for the current connection attempt")))
             return null
@@ -973,7 +982,7 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     testedMessage
                 } else {
-                    val user = sessionManager.signIn(profile, password)
+                    val user = sessionManager.signIn(profile, password, canPersist = container::canManageConnectionSetup)
                     val bootstrap = repository.discoverEssential(profile, user)
                     if (!isActive || generation != connectionRequestGeneration) return@launch
                     clearImageCaches()
@@ -1006,6 +1015,24 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
             }
+        }
+    }
+
+    internal fun testSetupConnection(rawUrl: String, username: String, password: String, host: String, port: String,
+        onResult: (Result<String>) -> Unit): Job? {
+        if (!container.canManageConnectionSetup()) {
+            onResult(Result.failure(IllegalStateException("Unlock settings before checking a connection")))
+            return null
+        }
+        val profile = ConnectionProfileFactory.create(rawUrl, username, host, port.toIntOrNull() ?: -1).getOrElse {
+            onResult(Result.failure(it)); return null
+        }
+        return viewModelScope.launch {
+            try {
+                app.opah.tv.setup.FrigateSetupCheck().check(profile, password)
+                if (container.canManageConnectionSetup()) onResult(Result.success("Connection checked — choose Sign in to save it"))
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { if (container.canManageConnectionSetup()) onResult(Result.failure(IllegalStateException("Could not connect — check the address and sign-in details"))) }
         }
     }
 
@@ -1376,6 +1403,18 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
         mutateTvAlertPolicy { policy -> policy.copy(minimumThreatLevel = level) }
     }
 
+    fun changeSharedNotificationPause(minutes: Int?) {
+        if (_state.value.notificationPauseBusy) return
+        if (!container.canManageConnectionSetup()) return
+        _state.update { it.copy(notificationPauseBusy = true, notificationPauseError = null) }
+        viewModelScope.launch {
+            try {
+                val changed = container.changeSharedNotificationPause(minutes)
+                _state.update { it.copy(notificationPauseError = if (changed) null else "Opah could not change the pause — try again") }
+            } finally { _state.update { it.copy(notificationPauseBusy = false) } }
+        }
+    }
+
     fun snoozeTvAlerts(minutes: Int) {
         if (minutes !in setOf(15, 60)) return
         if (!beginTvAlertMutation()) return
@@ -1534,11 +1573,33 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
         updateTvAlertOverlaySettings { it.copy(displayDurationSeconds = seconds) }
     }
 
+    fun setInteractiveFrigateAlerts(enabled: Boolean) {
+        val privacy = _state.value.privacy
+        if (!privacy.available || privacy.loading || privacy.pinRecordCorrupt ||
+            (privacy.pinConfigured && PinScope.SETTINGS in privacy.protectedScopes && PinScope.SETTINGS !in privacy.unlockedScopes)
+        ) return
+        updateTvAlertOverlaySettings { it.copy(interactiveFrigateAlerts = enabled) }
+    }
+
+    fun setInlineRecordingPreviews(enabled: Boolean) {
+        val privacy = _state.value.privacy
+        if (!privacy.available || privacy.loading || privacy.pinRecordCorrupt || privacy.guestModeActive ||
+            (privacy.pinConfigured && PinScope.SETTINGS in privacy.protectedScopes && PinScope.SETTINGS !in privacy.unlockedScopes)
+        ) return
+        viewModelScope.launch {
+            val updated = runCatching { container.changeInlineRecordingPreviews(enabled) }.getOrNull()
+            _state.update { current -> current.copy(tvAlerts = current.tvAlerts.copy(
+                overlaySettings = updated ?: current.tvAlerts.overlaySettings,
+                statusMessage = if (updated != null) "Alert appearance saved" else null,
+                errorMessage = if (updated == null) "This choice could not be saved" else null)) }
+        }
+    }
+
     private fun updateTvAlertOverlaySettings(
         transform: (TvAlertOverlaySettings) -> TvAlertOverlaySettings,
     ) {
         val updated = container.setTvAlertOverlaySettings(
-            transform(_state.value.tvAlerts.overlaySettings),
+            transform(container.tvAlertOverlaySettings()),
         )
         _state.update { current ->
             current.copy(
@@ -1931,13 +1992,14 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
         openPendingCamera()
     }
 
-    fun openTvAlert(profileKey: String, reviewId: String, actionNonce: String) {
+    internal fun openTvAlert(profileKey: String, reviewId: String, actionNonce: String,
+        preference: app.opah.tv.notifications.TvAlertOpenPreference = app.opah.tv.notifications.TvAlertOpenPreference.DEFAULT) {
         if (BuildConfig.DOCUMENTATION_MODE) return
         viewModelScope.launch {
             var attemptsRemaining = TV_ALERT_OPEN_RETRY_ATTEMPTS
             var resolution: TvAlertOpenResolution
             do {
-                resolution = container.resolveTvAlertOpen(profileKey, reviewId, actionNonce)
+                resolution = container.resolveTvAlertOpen(profileKey, reviewId, actionNonce, preference)
                 if (resolution != TvAlertOpenResolution.RetryLater) break
                 attemptsRemaining -= 1
                 if (attemptsRemaining > 0) delay(TV_ALERT_OPEN_RETRY_DELAY_MILLIS)
@@ -1946,7 +2008,8 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
             when (resolution) {
                 is TvAlertOpenResolution.LiveCamera -> openCameraByName(resolution.cameraId)
                 is TvAlertOpenResolution.RecordedReview -> {
-                    val item = reviewPlaybackItems(_state.value)
+                    kotlinx.coroutines.withTimeoutOrNull(5_000) { _state.first { it.activeProfile != null && it.snapshot != null } }
+                    val item = resolution.item ?: reviewPlaybackItems(_state.value)
                         .firstOrNull { it.id == resolution.reviewId }
                     if (item?.recordingAvailable == true) {
                         playReview(item)
@@ -1956,7 +2019,7 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 is TvAlertOpenResolution.Activity -> showActivityForTvAlert(resolution.expired)
                 TvAlertOpenResolution.PrivacyBlocked -> showTvAlertPrivacyGate(
-                    PendingTvAlertOpen(profileKey, reviewId, actionNonce),
+                    PendingTvAlertOpen(profileKey, reviewId, actionNonce, preference),
                 )
                 TvAlertOpenResolution.RetryLater,
                 TvAlertOpenResolution.Unavailable,
@@ -2015,7 +2078,7 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
                     privacy = it.privacy.copy(busy = false, errorMessage = null),
                 )
             }
-            openTvAlert(pending.profileKey, pending.reviewId, pending.actionNonce)
+            openTvAlert(pending.profileKey, pending.reviewId, pending.actionNonce, pending.preference)
         }
     }
 
@@ -5372,19 +5435,27 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
             filters = search.filters,
             eventId = search.similarToEventId,
             similarLabel = search.similarToLabel,
+            sourceCamera = search.similarToCamera,
             append = true,
         )
     }
 
-    fun findSimilarActivity(item: ReviewItem) {
-        val event = item.linkedEvents.firstOrNull() ?: return
-        runActivitySearch(
+    fun findSimilarActivity(item: ReviewItem): Boolean {
+        val seed = item.activitySimilaritySeed() ?: return false
+        return runActivitySearch(
             text = "",
             filters = ActivitySearchFilters(),
-            eventId = event.id,
-            similarLabel = event.subLabel?.takeIf(String::isNotBlank) ?: event.label,
+            eventId = seed.eventId,
+            similarLabel = seed.label,
+            sourceCamera = seed.cameraName,
             append = false,
         )
+    }
+
+    fun repeatActivitySearch(filters: ActivitySearchFilters = _state.value.activitySearch.filters) {
+        val search = _state.value.activitySearch
+        runActivitySearch(search.query, filters, search.similarToEventId, search.similarToLabel,
+            append = false, sourceCamera = search.similarToCamera)
     }
 
     private fun runActivitySearch(
@@ -5393,23 +5464,24 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
         eventId: String?,
         similarLabel: String?,
         append: Boolean,
-    ) {
+        sourceCamera: String? = null,
+    ): Boolean {
         val queryText = text.trim()
-        if (queryText.isEmpty() && eventId.isNullOrBlank()) return
+        if (queryText.isEmpty() && eventId.isNullOrBlank()) return false
         val current = _state.value
-        val snapshot = current.snapshot ?: return
-        if (!snapshot.capabilities.supports(FrigateFeature.SEMANTIC_SEARCH)) return
+        val snapshot = current.snapshot ?: return false
+        if (!snapshot.capabilities.supports(FrigateFeature.SEMANTIC_SEARCH)) return false
         val allowedCameras = if (BuildConfig.DOCUMENTATION_MODE) {
             snapshot.user.allowedCameras
         } else {
             visibleCameraNames(PrivacySurface.SEARCH)
         }
-        if (allowedCameras.isEmpty()) return
+        if (allowedCameras.isEmpty() || eventId != null && sourceCamera !in allowedCameras) return false
         val cameras = filters.cameraName
             ?.takeIf { it in allowedCameras }
             ?.let(::setOf)
             ?: allowedCameras.takeIf { filters.cameraName == null }
-            ?: return
+            ?: return false
         val page = if (append) current.activitySearch.page + 1 else 1
         val now = System.currentTimeMillis() / 1000.0
         val bounds = activitySearchBounds(filters.timeRange, now)
@@ -5453,13 +5525,14 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
                         hasMore = results.size >= ACTIVITY_SEARCH_PAGE_SIZE,
                         similarToEventId = eventId,
                         similarToLabel = similarLabel,
+                        similarToCamera = sourceCamera,
                         errorMessage = null,
                     ),
                 )
             }
-            return
+            return true
         }
-        val profile = current.activeProfile ?: return
+        val profile = current.activeProfile ?: return false
         activitySearchJob?.cancel()
         _state.update {
             it.copy(
@@ -5470,6 +5543,7 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
                     similarLabel = similarLabel,
                     append = append,
                     requestId = requestId,
+                    sourceCamera = sourceCamera,
                 ),
             )
         }
@@ -5534,6 +5608,7 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
         }
+        return true
     }
 
     fun playSearchEvent(event: SearchEvent) {
@@ -6411,9 +6486,13 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
             reviewPlaybackNavigationJob?.cancel()
         }
         if (historyCameras.isEmpty()) historyLoadJob?.cancel()
-        if (searchCameras.isEmpty()) {
+        val similaritySourceRevoked = current.activitySearch.isSimilaritySearch &&
+            current.activitySearch.similarToCamera !in searchCameras
+        if (searchCameras.isEmpty() || similaritySourceRevoked) {
             activitySearchJob?.cancel()
             activitySearchRequestId += 1
+        }
+        if (searchCameras.isEmpty()) {
             motionSearchJob?.cancel()
             motionSearchRequestId += 1
         }
@@ -6454,9 +6533,7 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
                 ptz = state.ptz.takeIf { ptzAllowed } ?: PtzUiState(),
                 review = state.review.afterActivityScopeChanged(activityCameras),
                 history = state.history.takeIf { historyAllowed } ?: HistoryBrowserState(),
-                activitySearch = state.activitySearch.copy(
-                    results = state.activitySearch.results.filter { it.camera in searchCameras },
-                ),
+                activitySearch = state.activitySearch.afterSearchScopeChanged(searchCameras),
                 exports = if (clipCameras.isEmpty()) {
                     ExportsUiState(loadedOnce = state.exports.loadedOnce, incidentsLoaded = true)
                 } else {

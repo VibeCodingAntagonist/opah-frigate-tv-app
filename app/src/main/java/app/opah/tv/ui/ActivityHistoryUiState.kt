@@ -4,6 +4,7 @@ import app.opah.tv.data.model.RecordingSegment
 import app.opah.tv.data.model.RecordingHourSummary
 import app.opah.tv.data.model.MotionActivity
 import app.opah.tv.data.model.SearchEvent
+import app.opah.tv.data.model.ReviewItem
 import app.opah.tv.data.model.MotionSearchJobState
 import app.opah.tv.data.model.MotionSearchResult
 import app.opah.tv.data.model.MotionSearchPoint
@@ -223,7 +224,33 @@ data class ActivitySearchState(
     val similarToEventId: String? = null,
     val similarToLabel: String? = null,
     val errorMessage: String? = null,
+    val similarToCamera: String? = null,
 )
+
+internal data class ActivitySimilaritySeed(val eventId: String, val cameraName: String, val label: String)
+
+/** Review detections already identify tracked objects; loading the detail pane is optional. */
+internal fun ReviewItem.activitySimilaritySeed(): ActivitySimilaritySeed? {
+    val linked = linkedEvents.firstOrNull { event ->
+        event.camera == camera && event.id.isNotBlank() &&
+            (detectionIds.isEmpty() || event.id in detectionIds)
+    }
+    val foreignIds = linkedEvents.filter { it.camera != camera }.mapTo(mutableSetOf(), SearchEvent::id)
+    val id = linked?.id ?: detectionIds.firstOrNull { it.isNotBlank() && it !in foreignIds } ?: return null
+    // The context label describes the object, never a recognized person's name or plate.
+    val label = linked?.label?.takeIf(String::isNotBlank)
+        ?: objects.filter(String::isNotBlank).distinct().singleOrNull() ?: "activity"
+    return ActivitySimilaritySeed(id, camera, label)
+}
+
+internal val ActivitySearchState.isSimilaritySearch: Boolean get() = !similarToEventId.isNullOrBlank()
+internal val ActivitySearchState.searchDescription: String get() = if (isSimilaritySearch) {
+    "Similar to ${similarToLabel?.takeIf(String::isNotBlank)?.replace('_', ' ')?.replaceFirstChar(Char::uppercase) ?: "selected activity"}"
+} else query
+
+internal fun ActivitySearchState.afterSearchScopeChanged(allowedCameras: Set<String>): ActivitySearchState =
+    if (isSimilaritySearch && similarToCamera !in allowedCameras) ActivitySearchState()
+    else copy(results = results.filter { it.camera in allowedCameras })
 
 internal fun ActivitySearchState.beginActivitySearch(
     query: String,
@@ -232,6 +259,7 @@ internal fun ActivitySearchState.beginActivitySearch(
     similarLabel: String?,
     append: Boolean,
     requestId: Long,
+    sourceCamera: String? = null,
 ): ActivitySearchState = copy(
     query = query,
     filters = filters,
@@ -244,6 +272,7 @@ internal fun ActivitySearchState.beginActivitySearch(
     hasMore = if (append) hasMore else false,
     similarToEventId = eventId,
     similarToLabel = similarLabel,
+    similarToCamera = sourceCamera,
     errorMessage = null,
 )
 

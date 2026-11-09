@@ -34,6 +34,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -92,6 +93,7 @@ internal fun cameraGroupBackAction(
 internal fun CameraGroupViewScreen(
     state: CameraGroupViewUiState,
     preferRtpTcp: Boolean,
+    stretchedCameraNames: Set<String>,
     pictureInPictureAvailable: Boolean,
     pictureInPictureActive: Boolean,
     onEnterPictureInPicture: (PictureInPictureRequest) -> Boolean,
@@ -194,6 +196,7 @@ internal fun CameraGroupViewScreen(
             CameraGroupGrid(
                 streams = state.streams,
                 preferRtpTcp = preferRtpTcp,
+                stretchedCameraNames = stretchedCameraNames,
                 showLabels = overlayVisible && !pictureInPictureActive,
                 onPlaybackReady = { cameraName, ready ->
                     readyCameraNames = if (ready) {
@@ -281,6 +284,7 @@ internal fun CameraGroupViewScreen(
 private fun CameraGroupGrid(
     streams: List<CameraGroupStream>,
     preferRtpTcp: Boolean,
+    stretchedCameraNames: Set<String>,
     showLabels: Boolean,
     onPlaybackReady: (String, Boolean) -> Unit,
     cachedBitmap: (String) -> Bitmap?,
@@ -293,6 +297,7 @@ private fun CameraGroupGrid(
             stream = stream,
             index = index,
             preferRtpTcp = preferRtpTcp,
+            stretched = stream.camera.name in stretchedCameraNames,
             showLabel = showLabels,
             onPlaybackReady = onPlaybackReady,
             cachedBitmap = cachedBitmap,
@@ -333,6 +338,7 @@ private fun CameraGroupTile(
     stream: CameraGroupStream,
     index: Int,
     preferRtpTcp: Boolean,
+    stretched: Boolean,
     showLabel: Boolean,
     onPlaybackReady: (String, Boolean) -> Unit,
     cachedBitmap: (String) -> Bitmap?,
@@ -348,13 +354,14 @@ private fun CameraGroupTile(
                     cameraName = stream.camera.name,
                     cachedBitmap = { cachedBitmap(stream.camera.name) },
                     refreshBitmap = { refreshBitmap(stream.camera.name, 420) },
+                    contentScale = if (stretched) ContentScale.FillBounds else ContentScale.Fit,
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
                 CameraGroupLiveVideo(
                     uri = stream.uri,
                     preferRtpTcp = preferRtpTcp,
-                    stretched = true,
+                    stretched = stretched,
                     startDelayMillis = index * NEXT_PLAYER_START_DELAY_MS,
                     onReady = { ready -> onPlaybackReady(stream.camera.name, ready) },
                 )

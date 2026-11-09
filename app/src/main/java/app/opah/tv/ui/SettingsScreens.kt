@@ -87,7 +87,7 @@ internal enum class SettingsPage(
     PRIVACY("Privacy", "Protect selected cameras and app areas with a PIN"),
     STARTUP("Startup", "Choose what Opah opens first"),
     CONNECTION("Connection", "Manage this device's connection"),
-    SYSTEM("Server", "Manage the connection and see configuration, performance, and recording space"),
+    SYSTEM("Server", "See server performance and recording space"),
     ADVANCED("Device Info", "See TV and decoder details for troubleshooting"),
     ABOUT("About Opah", "Project, privacy, and legal information"),
 }
@@ -211,6 +211,7 @@ internal fun TvAlertsSettingsScreen(
     onOverlayHorizontalPosition: (TvAlertOverlayHorizontalPosition) -> Unit,
     onOverlayImageSize: (TvAlertOverlayImageSize) -> Unit,
     onOverlayDisplayDurationSeconds: (Int) -> Unit,
+    onInteractiveFrigateAlerts: (Boolean) -> Unit,
     onOpenAndroidSettings: () -> Unit,
     onOpenOverlaySettings: () -> Unit,
     onLoadModes: () -> Unit,
@@ -271,6 +272,10 @@ internal fun TvAlertsSettingsScreen(
                         else -> "Permission required"
                     },
                 ) {
+                    SettingToggle(label = "Interactive Frigate alerts", value = alerts.overlaySettings.interactiveFrigateAlerts,
+                        onChange = onInteractiveFrigateAlerts)
+                    Text("Use the remote to act on alerts; remote control moves temporarily from your current app",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(
                         "Choose how long each alert stays on screen",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1451,6 +1456,7 @@ private fun pinScopeLabel(scope: PinScope): String = when (scope) {
     PinScope.CLIPS_AND_INCIDENTS -> "Clips and Incidents"
     PinScope.ACTIVITY_HISTORY_SEARCH -> "Activity, History, and Search"
     PinScope.PRIVATE_CAMERAS -> "Private cameras"
+    PinScope.HOME_ASSISTANT_ACTIONS -> "Home Assistant actions"
     PinScope.EXIT_GUEST_MODE -> "Legacy protection"
 }
 
@@ -1461,6 +1467,7 @@ private val PIN_OPTIONAL_SCOPES = listOf(
     PinScope.CLIPS_AND_INCIDENTS,
     PinScope.ACTIVITY_HISTORY_SEARCH,
     PinScope.PRIVATE_CAMERAS,
+    PinScope.HOME_ASSISTANT_ACTIONS,
 )
 
 private const val MAX_PIN_DIGITS = 8

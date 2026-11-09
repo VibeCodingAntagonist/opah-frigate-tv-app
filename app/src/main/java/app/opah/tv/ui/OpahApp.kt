@@ -524,6 +524,7 @@ fun OpahApp(
                 CameraGroupViewScreen(
                     state = cameraGroupView,
                     preferRtpTcp = state.settings.preferRtpTcp,
+                    stretchedCameraNames = state.settings.stretchedCameraNames,
                     pictureInPictureAvailable = pictureInPictureAvailable,
                     pictureInPictureActive = pictureInPictureActive,
                     onEnterPictureInPicture = onEnterPictureInPicture,
@@ -546,6 +547,7 @@ fun OpahApp(
                 val monitor = requireNotNull(state.monitorMode)
                 MonitorModeScreen(
                     state = monitor,
+                    stretchedCameraNames = state.settings.stretchedCameraNames,
                     onPreset = viewModel::setMonitorPreset,
                     onManualCamera = viewModel::selectMonitorCamera,
                     onPlaybackReady = viewModel::monitorPlaybackReady,
@@ -811,9 +813,10 @@ fun OpahApp(
                                     onSaveClip = viewModel::saveReviewClip,
                                     onSaveAllAngles = viewModel::saveReviewAllAngles,
                                     onFindSimilar = { item ->
-                                        activityPageName = ActivityPage.SEARCH.name
-                                        restoreFocusKey = "activity:page:${ActivityPage.SEARCH.name}"
-                                        viewModel.findSimilarActivity(item)
+                                        if (viewModel.findSimilarActivity(item)) {
+                                            activityPageName = ActivityPage.SEARCH.name
+                                            restoreFocusKey = "activity:page:${ActivityPage.SEARCH.name}"
+                                        }
                                     },
                                     cachedBitmap = { item -> viewModel.cachedReviewImage(item)?.bitmap },
                                     refreshBitmap = { item, height ->
@@ -868,6 +871,7 @@ fun OpahApp(
                                         restoreFocusKey = "activity:page:${page.name}"
                                     },
                                     onSearch = viewModel::searchActivity,
+                                    onRepeatSearch = viewModel::repeatActivitySearch,
                                     onLoadMore = viewModel::loadMoreActivitySearch,
                                     onPlay = { event, key ->
                                         playbackReturnFocusKey = key
@@ -1071,6 +1075,7 @@ fun OpahApp(
                                     onOverlayImageSize = viewModel::setTvAlertOverlayImageSize,
                                     onOverlayDisplayDurationSeconds =
                                         viewModel::setTvAlertOverlayDisplayDurationSeconds,
+                                    onInteractiveFrigateAlerts = viewModel::setInteractiveFrigateAlerts,
                                     onOpenAndroidSettings = onOpenNotificationSettings,
                                     onOpenOverlaySettings = onOpenOverlaySettings,
                                     onLoadModes = viewModel::loadModes,

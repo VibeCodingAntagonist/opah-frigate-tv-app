@@ -19,12 +19,13 @@ try when a camera does not play.
 | Frigate 0.18 Modes | Display, confirmed administrator switch, verification, and Undo have automated local coverage |
 | Frigate 0.18 Motion Search | Start, progress, results, cancellation, no-result, failure, and timeout paths have automated local coverage |
 | Frigate 0.18 Incidents | Authorization filtering and exact create, edit, assignment, and deletion contracts have automated local coverage |
-| Activity search | Available on Frigate 0.17.2 and 0.18 when search is turned on in Frigate |
+| Activity search | Available on Frigate 0.17.2 and 0.18 when search is turned on; visual similarity search verified on the main TV |
 | Activity summaries | Shown when Frigate has created a summary for that activity |
 | Camera groups | Two and four cameras tested on the main device; results depend on the TV's video hardware |
 | Picture-in-picture | Requires Android TV 14 or newer and support from the TV |
 | Camera controls | Built for compatible Frigate PTZ cameras; physical-camera testing is still needed |
-| Native TV alerts | Local evaluator, permission, channel, privacy, lifecycle, and reboot paths have automated coverage; physical-TV background testing is pending |
+| Native TV alerts | Pop-up display, remote controls, privacy, recording previews, and timeouts tested on the main TV |
+| Home Assistant notifications | Real text delivery and PIN-protected button responses verified on the main TV; pictures, privacy, and reconnection also have local test coverage |
 | Monitor Mode | Deterministic promotion, recovery, privacy, timer, and cleanup paths have automated coverage; ONN endurance testing is pending |
 | Highlights briefing | Briefing progress, private-camera protection, and review queues have automated coverage and TV checks; a first briefing covers up to 24 hours, with later briefings bounded to seven days |
 | Automatic playback compatibility | Strategy selection, persistence, invalidation, and fallback paths have automated coverage; the full device/codec matrix is pending |
@@ -58,9 +59,11 @@ If a camera stays on **Preparing** or does not start:
 
 ## Camera previews and connection problems
 
-The **Cameras** grid shows refreshed still previews. Select a camera to open
-live video. The preview status says when Opah last checked the picture; a
-failed update shows an unavailable message and **Retry preview**.
+The **Cameras** grid shows refreshed still previews. Move to a camera and press
+**OK** to open live video. The preview status says when Opah last checked the
+picture. If a preview fails, hold **OK** on that camera and choose
+**Refresh preview**. The same options menu contains its favorites and layout
+choices.
 
 If one camera in a multi-camera view fails, select its retry action. The other
 cameras keep playing. Monitor also keeps an unavailable message visible after
@@ -108,8 +111,14 @@ Search appears only when Frigate reports that the feature is available. Search
 must also be turned on and ready in Frigate. A short description such as
 `red car` usually works better than a long sentence.
 
-**Find similar activity** uses the same Frigate search feature. If Search is
-unavailable, check the Frigate search setup before changing anything in Opah.
+For activity with a detected object, **Find similar activity** opens Search and
+starts a visual search using that activity. **Similar to…** identifies the
+search. Refreshing or changing its filters keeps the same starting activity;
+entering a new description starts a text search instead.
+
+Both kinds of search require Frigate's search feature to be available. Camera
+and local privacy restrictions still apply. Losing access to the starting
+camera clears a similarity search.
 
 ## Camera groups and controls
 

@@ -10,12 +10,16 @@ internal object AndroidNotificationChannels {
     const val SERVICE_CHANNEL_ID = "opah_tv_alerts_service_v1"
     const val ALERT_CHANNEL_ID = "opah_tv_alerts_important_v1"
     const val DETECTION_CHANNEL_ID = "opah_tv_alerts_detection_v1"
+    const val HOME_ASSISTANT_CHANNEL_ID = "opah_home_assistant_v1"
 
     fun create(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannels(
             listOf(
+                NotificationChannel(HOME_ASSISTANT_CHANNEL_ID, "Home Assistant", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                    description = "Notifications sent to this TV by Home Assistant"
+                },
                 NotificationChannel(
                     SERVICE_CHANNEL_ID,
                     "TV alerts status",

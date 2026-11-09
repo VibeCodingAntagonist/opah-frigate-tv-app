@@ -47,6 +47,7 @@ internal class NativeSettingsSurface(
     private val onFocused: (String, View) -> Unit,
     private val onAdjust: (String, Int) -> Unit,
     initialPosition: NativeSettingsPosition? = null,
+    sectionTitle: String = "Settings",
 ) : LinearLayout(activity) {
     private val title = TextView(activity).apply {
         textSize = 20f
@@ -136,7 +137,7 @@ internal class NativeSettingsSurface(
         addView(
             TextView(activity).apply {
                 tag = "settings:heading"
-                text = "Settings"
+                text = sectionTitle
                 textSize = 26f
                 setTypeface(typeface, Typeface.BOLD)
                 setTextColor(NativeTheme.palette.text)

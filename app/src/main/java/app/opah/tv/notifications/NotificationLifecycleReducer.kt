@@ -90,6 +90,7 @@ object NotificationLifecycleReducer {
             AlertDecisionReason.PRIVATE_CAMERA,
             AlertDecisionReason.PIN_LOCKED,
             AlertDecisionReason.NEVER_NOTIFY,
+            AlertDecisionReason.SHARED_PAUSE,
             AlertDecisionReason.REVIEWED,
             AlertDecisionReason.INCOMPLETE_EVENT,
             AlertDecisionReason.UNKNOWN_SEVERITY,

@@ -29,6 +29,8 @@ data class TvAlertOverlaySettings(
     val horizontalPosition: TvAlertOverlayHorizontalPosition = TvAlertOverlayHorizontalPosition.CENTER,
     val imageSize: TvAlertOverlayImageSize = TvAlertOverlayImageSize.MEDIUM,
     val displayDurationSeconds: Int = TV_ALERT_OVERLAY_DEFAULT_DISPLAY_SECONDS,
+    val interactiveFrigateAlerts: Boolean = false,
+    val inlineRecordingPreviews: Boolean = false,
 ) {
     init {
         require(
@@ -66,6 +68,8 @@ internal class TvAlertOverlaySettingsStore(context: Context) {
             TV_ALERT_OVERLAY_MIN_DISPLAY_SECONDS,
             TV_ALERT_OVERLAY_MAX_DISPLAY_SECONDS,
         ),
+        interactiveFrigateAlerts = preferences.getBoolean(INTERACTIVE_FRIGATE_ALERTS, false),
+        inlineRecordingPreviews = preferences.getBoolean(INLINE_RECORDING_PREVIEWS, false),
     )
 
     fun save(settings: TvAlertOverlaySettings): TvAlertOverlaySettings {
@@ -74,6 +78,8 @@ internal class TvAlertOverlaySettingsStore(context: Context) {
             putString(HORIZONTAL_POSITION, settings.horizontalPosition.name)
             putString(IMAGE_SIZE, settings.imageSize.name)
             putInt(DISPLAY_DURATION_SECONDS, settings.displayDurationSeconds)
+            putBoolean(INTERACTIVE_FRIGATE_ALERTS, settings.interactiveFrigateAlerts)
+            putBoolean(INLINE_RECORDING_PREVIEWS, settings.inlineRecordingPreviews)
         }
         return settings
     }
@@ -87,5 +93,7 @@ internal class TvAlertOverlaySettingsStore(context: Context) {
         const val HORIZONTAL_POSITION = "horizontal_position"
         const val IMAGE_SIZE = "image_size"
         const val DISPLAY_DURATION_SECONDS = "display_duration_seconds"
+        const val INTERACTIVE_FRIGATE_ALERTS = "interactive_frigate_alerts"
+        const val INLINE_RECORDING_PREVIEWS = "inline_recording_previews"
     }
 }

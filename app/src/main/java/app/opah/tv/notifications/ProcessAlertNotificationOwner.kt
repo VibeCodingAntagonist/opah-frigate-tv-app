@@ -34,6 +34,7 @@ internal class ProcessAlertNotificationOwner(
     private val wallClockMillis: () -> Long = System::currentTimeMillis,
     private val monotonicClockMillis: () -> Long,
     private val timeZone: () -> TimeZone = TimeZone::getDefault,
+    private val pauseState: StateFlow<NotificationPauseSnapshot> = kotlinx.coroutines.flow.MutableStateFlow(NotificationPauseSnapshot()),
 ) {
     private var collectionJob: Job? = null
     private var authenticationJob: Job? = null
@@ -96,8 +97,8 @@ internal class ProcessAlertNotificationOwner(
 
     private suspend fun collectProfile(profileKey: String) {
         var previous: EvaluationSignature? = null
-        val modeAndMonitor = combine(modeState, monitorReviewId) { mode, reviewId ->
-            mode to reviewId
+        val modeAndMonitor = combine(modeState, monitorReviewId, pauseState) { mode, reviewId, pause ->
+            Triple(mode, reviewId, pause)
         }
         combine(
             awareness.state,
@@ -113,6 +114,7 @@ internal class ProcessAlertNotificationOwner(
                 currentTransportState,
                 currentModeAndMonitor.first,
                 currentModeAndMonitor.second,
+                currentModeAndMonitor.third,
             )
         }.collect { signal ->
             val processState = signal.awareness
@@ -129,13 +131,14 @@ internal class ProcessAlertNotificationOwner(
                 transportMarker = signal.transport.notificationMarker(),
                 modeMarker = signal.mode,
                 monitorReviewId = signal.monitorReviewId,
+                pauseMarker = signal.pause,
             )
             val fullSweep = previous == null ||
                 previous?.configurationMarker != signature.configurationMarker ||
                 previous?.privacyMarker != signature.privacyMarker ||
                 previous?.transportMarker != signature.transportMarker ||
                 previous?.modeMarker != signature.modeMarker ||
-                previous?.monitorReviewId != signature.monitorReviewId
+                previous?.monitorReviewId != signature.monitorReviewId || previous?.pauseMarker != signature.pauseMarker
             if (previous != null && previous?.privacyMarker != signature.privacyMarker) {
                 coordinator.purgeProfileEphemeralContent(profileKey)
             }
@@ -272,6 +275,7 @@ private data class EvaluationSignal(
     val transport: RealtimeTransportState,
     val mode: AlertModeProcessState,
     val monitorReviewId: String?,
+    val pause: NotificationPauseSnapshot,
 )
 
 private data class EvaluationSignature(
@@ -281,6 +285,7 @@ private data class EvaluationSignature(
     val transportMarker: NotificationTransportMarker,
     val modeMarker: AlertModeProcessState,
     val monitorReviewId: String?,
+    val pauseMarker: NotificationPauseSnapshot,
 )
 
 private data class NotificationTransportMarker(

@@ -24,6 +24,8 @@ import androidx.core.view.isEmpty
 import androidx.core.view.isNotEmpty
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -37,6 +39,8 @@ import app.opah.tv.R
 import app.opah.tv.BuildConfig
 import app.opah.tv.pipAspectRatio
 import app.opah.tv.playback.LivePlaybackOptions
+import app.opah.tv.playback.LivePlayer
+import app.opah.tv.playback.LivePlayerFactory
 import app.opah.tv.playback.PlaybackKind
 import app.opah.tv.playback.PlaybackRequest
 import app.opah.tv.playback.RecordedPlayerFactory
@@ -51,9 +55,11 @@ import app.opah.tv.ui.DOCUMENTATION_URI_PREFIX
 import app.opah.tv.ui.DocumentationSupport
 import app.opah.tv.ui.boundedSeekPosition
 import app.opah.tv.playback.media3.SingleLivePlaybackRequestId
+import app.opah.tv.playback.media3.SingleLivePlaybackSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
@@ -167,6 +173,9 @@ internal class NativePlaybackSurface(
     private val onAutomaticReviewWatchThresholdReached: () -> Unit = {},
     private val onPlaybackEnded: () -> Unit = {},
     initialFeedbackPending: Boolean = false,
+    private val livePlayerFactory: LivePlayerFactory = (activity.application as OpahApplication).container.livePlayerFactory,
+    private val openLiveSession: suspend (SingleLivePlaybackRequestId, PlayerViewMedia3VideoOutputTarget, Boolean) -> SingleLivePlaybackSession =
+        { id, output, videoOnly -> (activity.application as OpahApplication).container.singleLivePlaybackCoordinator.open(id, output, videoOnly) },
 ) : FrameLayout(activity) {
     private val application = activity.application as OpahApplication
     private val documentationPlayback = BuildConfig.DOCUMENTATION_MODE &&
@@ -314,6 +323,10 @@ internal class NativePlaybackSurface(
     }
     private var player: ExoPlayer? = null
     private var liveJob: Job? = null
+    private var directPlaybackJob: Job? = null
+    private var directLivePlayer: LivePlayer? = null
+    private var recordedPositionMillis = 0L
+    private var recordedPlayWhenReady = true
     private var progressJob: Job? = null
     private var muted = startMuted
     private var compatibilityTestExitScheduled = false
@@ -450,7 +463,16 @@ internal class NativePlaybackSurface(
         } else if (request.kind == PlaybackKind.LIVE && request.liveCompatibilityRequestId != null) {
             startCompatibilityPlayback(request.liveCompatibilityRequestId)
         } else {
-            startDirectPlayback()
+            directPlaybackJob = activity.lifecycleScope.launch {
+                activity.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                    try {
+                        startDirectPlayback()
+                        awaitCancellation()
+                    } finally {
+                        releaseDirectPlayback()
+                    }
+                }
+            }
         }
         updateControls(initialControls, initialActionMessage, initialFeedbackPending)
         updateDiagnostics()
@@ -539,11 +561,13 @@ internal class NativePlaybackSurface(
         chromeHideJob = null
         liveJob?.cancel()
         liveJob = null
+        directPlaybackJob?.cancel()
+        directPlaybackJob = null
         progressJob?.cancel()
         progressJob = null
         playerView.player = null
-        if (!coordinatorOwned) player?.release()
-        player = null
+        if (!coordinatorOwned) releaseDirectPlayback()
+        else player = null
     }
 
     fun setPictureInPictureActive(active: Boolean) {
@@ -812,7 +836,9 @@ internal class NativePlaybackSurface(
         runCatching {
             when (request.kind) {
                 PlaybackKind.LIVE -> {
-                    val livePlayer = application.container.livePlayerFactory.create(activity, false)
+                    val livePlayer = livePlayerFactory.create(activity, false)
+                    directLivePlayer = livePlayer
+                    player = livePlayer.player
                     livePlayer.prepare(
                         request.uri,
                         LivePlaybackOptions(forceRtpTcp = preferRtpTcp, videoOnly = false),
@@ -824,6 +850,7 @@ internal class NativePlaybackSurface(
                     application.container.httpClient,
                     preferSoftwareVideoDecoder = false,
                 ).apply {
+                    player = this
                     val item = MediaItem.Builder().setUri(request.uri).apply {
                         val path = request.uri.substringBefore('?').lowercase()
                         when {
@@ -832,10 +859,12 @@ internal class NativePlaybackSurface(
                         }
                     }.build()
                     setMediaItem(item)
+                    if (recordedPositionMillis > 0L) seekTo(recordedPositionMillis)
                     prepare()
                 }
             }
         }.onSuccess(::attachPlayer).onFailure {
+            releaseDirectPlayback()
             status.setText(R.string.native_playback_start_failed)
         }
     }
@@ -853,69 +882,72 @@ internal class NativePlaybackSurface(
     }
 
     private fun startCompatibilityPlayback(rawRequestId: String) {
-        retry.visibility = View.GONE
-        status.text = if (request.compatibilityTest) {
-            "Checking camera compatibility automatically"
-        } else {
-            "Finding a compatible stream"
-        }
         liveJob = activity.lifecycleScope.launch {
-            val target = PlayerViewMedia3VideoOutputTarget(
-                playerView = playerView,
-                onAttached = { attached -> attachPlayer(attached) },
-                onDetached = { detached -> if (player === detached) detachPlayer() },
-            )
-            val session = try {
-                application.container.singleLivePlaybackCoordinator.open(
-                    SingleLivePlaybackRequestId(rawRequestId),
-                    target,
-                    videoOnly = request.compatibilityTestVideoOnly,
-                )
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                status.setText(R.string.native_live_start_failed)
-                return@launch
-            }
-            try {
-                session.snapshots.collect { snapshot ->
-                    val state = snapshot.state
-                    status.text = when (state) {
-                        is PlaybackCompatibilityState.Attempting -> "Trying a playback option"
-                        is PlaybackCompatibilityState.Recovering -> "Trying the next playback option"
-                        is PlaybackCompatibilityState.Verified,
-                        is PlaybackCompatibilityState.UnpersistedLive,
-                        is PlaybackCompatibilityState.Persisting,
-                        -> "Playing with a verified camera setting"
-                        is PlaybackCompatibilityState.Finished -> when (state.result) {
-                            is PlaybackResult.VerifiedLive,
-                            is PlaybackResult.UnpersistedLive,
-                            -> "Playing with a verified camera setting"
-                            is PlaybackResult.Cancelled -> "Compatibility check stopped"
-                            else -> "No reliable playback choice was found"
-                        }
-                        is PlaybackCompatibilityState.Idle -> "Preparing compatibility check"
-                        is PlaybackCompatibilityState.Releasing,
-                        is PlaybackCompatibilityState.ReleasedAwaitingPersistence,
-                        -> "Saving the camera setting"
-                        is PlaybackCompatibilityState.PresentingSnapshot -> "Confirming video output"
-                    }
-                    if (request.compatibilityTest) {
-                        nativeCompatibilityTestStatus(request.title, state)?.let(onCompatibilityTestStatus)
-                    }
-                    if (
-                        request.compatibilityTest &&
-                        nativeCompatibilityTestComplete(state) &&
-                        !compatibilityTestExitScheduled
-                    ) {
-                        compatibilityTestExitScheduled = true
-                        delay(COMPATIBILITY_TEST_RESULT_DISPLAY_MILLIS)
-                        onClose()
-                    }
+            activity.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                compatibilityTestExitScheduled = false
+                retry.visibility = View.GONE
+                status.text = if (request.compatibilityTest) {
+                    "Checking camera compatibility automatically"
+                } else {
+                    "Finding a compatible stream"
                 }
-            } finally {
-                withContext(NonCancellable) { session.close() }
-                detachPlayer()
+                val target = PlayerViewMedia3VideoOutputTarget(
+                    playerView = playerView,
+                    onAttached = { attached -> attachPlayer(attached) },
+                    onDetached = { detached -> if (player === detached) detachPlayer() },
+                )
+                val session = try {
+                    openLiveSession(
+                        SingleLivePlaybackRequestId(rawRequestId),
+                        target,
+                        request.compatibilityTestVideoOnly,
+                    )
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    status.setText(R.string.native_live_start_failed)
+                    return@repeatOnLifecycle
+                }
+                try {
+                    session.snapshots.collect { snapshot ->
+                        val state = snapshot.state
+                        status.text = when (state) {
+                            is PlaybackCompatibilityState.Attempting -> "Trying a playback option"
+                            is PlaybackCompatibilityState.Recovering -> "Trying the next playback option"
+                            is PlaybackCompatibilityState.Verified,
+                            is PlaybackCompatibilityState.UnpersistedLive,
+                            is PlaybackCompatibilityState.Persisting,
+                            -> "Playing with a verified camera setting"
+                            is PlaybackCompatibilityState.Finished -> when (state.result) {
+                                is PlaybackResult.VerifiedLive,
+                                is PlaybackResult.UnpersistedLive,
+                                -> "Playing with a verified camera setting"
+                                is PlaybackResult.Cancelled -> "Compatibility check stopped"
+                                else -> "No reliable playback choice was found"
+                            }
+                            is PlaybackCompatibilityState.Idle -> "Preparing compatibility check"
+                            is PlaybackCompatibilityState.Releasing,
+                            is PlaybackCompatibilityState.ReleasedAwaitingPersistence,
+                            -> "Saving the camera setting"
+                            is PlaybackCompatibilityState.PresentingSnapshot -> "Confirming video output"
+                        }
+                        if (request.compatibilityTest) {
+                            nativeCompatibilityTestStatus(request.title, state)?.let(onCompatibilityTestStatus)
+                        }
+                        if (
+                            request.compatibilityTest &&
+                            nativeCompatibilityTestComplete(state) &&
+                            !compatibilityTestExitScheduled
+                        ) {
+                            compatibilityTestExitScheduled = true
+                            delay(COMPATIBILITY_TEST_RESULT_DISPLAY_MILLIS)
+                            onClose()
+                        }
+                    }
+                } finally {
+                    withContext(NonCancellable) { session.close() }
+                    detachPlayer()
+                }
             }
         }
     }
@@ -927,7 +959,7 @@ internal class NativePlaybackSurface(
         }
         playerView.player = attached
         attached.volume = if (muted) 0f else 1f
-        attached.playWhenReady = true
+        attached.playWhenReady = if (request.kind == PlaybackKind.RECORDED) recordedPlayWhenReady else true
         attached.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 updatePlayPauseControl(attached.isPlaying)
@@ -980,6 +1012,22 @@ internal class NativePlaybackSurface(
         progressJob = null
         playerView.player = null
         player = null
+        pictureInPictureReady = false
+        pictureInPicture.isEnabled = false
+        pictureInPicture.alpha = 0.45f
+    }
+
+    private fun releaseDirectPlayback() {
+        val active = player
+        if (request.kind == PlaybackKind.RECORDED && active != null) {
+            recordedPositionMillis = active.currentPosition.coerceAtLeast(0L)
+            recordedPlayWhenReady = active.playWhenReady
+        }
+        val live = directLivePlayer
+        directLivePlayer = null
+        detachPlayer()
+        if (live != null) live.release() else active?.release()
+        lastWatchSampleElapsedRealtime = null
     }
 
     private fun seekBy(offsetMillis: Long) {
@@ -1091,12 +1139,10 @@ internal class NativePlaybackSurface(
     }
 
     private fun retryPlayback() {
-        if (coordinatorOwned) return
-        progressJob?.cancel()
-        progressJob = null
-        playerView.player = null
-        player?.release()
-        player = null
+        if (closed || coordinatorOwned || !activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
+        releaseDirectPlayback()
+        recordedPositionMillis = 0L
+        recordedPlayWhenReady = true
         playbackEndedReported = false
         startDirectPlayback()
     }

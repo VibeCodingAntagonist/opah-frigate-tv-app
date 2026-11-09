@@ -7,8 +7,6 @@ import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import android.provider.Settings
 import android.text.TextUtils
 import android.view.Gravity
@@ -28,98 +26,92 @@ internal object TvAlertOverlayPermission {
 }
 
 /**
- * Shows one short, passive TV alert above the current app.
+ * Presents privacy-checked Frigate alerts and Home Assistant messages.
  *
- * The overlay never accepts touch or D-pad input. Opening and snoozing remain available through
- * the durable Android notification, while this surface provides the visible interruption that
- * some TV launchers omit.
+ * Frigate interaction is explicitly opt-in; the window owner bounds focus, queues and timers.
  */
-internal class TvAlertOverlayPresenter(context: Context) {
+internal class TvAlertOverlayPresenter(
+    context: Context,
+    private val canDrawOverlays: () -> Boolean = { TvAlertOverlayPermission.isGranted(context.applicationContext) },
+    private val addWindow: (View, WindowManager.LayoutParams) -> Unit = { view, params ->
+        view.context.getSystemService(WindowManager::class.java).addView(view, params)
+    },
+    private val removeWindow: (View) -> Unit = { view ->
+        view.context.getSystemService(WindowManager::class.java).removeViewImmediate(view)
+    },
+) {
     private val appContext = context.applicationContext
-    private val windowManager = appContext.getSystemService(WindowManager::class.java)
-    private val settingsStore = TvAlertOverlaySettingsStore(appContext)
-    private val mainHandler = Handler(Looper.getMainLooper())
-    private var active: ActiveOverlay? = null
-    private var generation: Long = 0L
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var protectedActionVisible = false
+    private var inlineVisible = false
+    private val inlineDelegate = lazy {
+        FrigateInlinePreviewOwner(appContext, canDrawOverlays, addWindow, removeWindow) { visible ->
+            inlineVisible = visible
+            owner.protectedActionVisible(protectedActionVisible || inlineVisible)
+        }
+    }
+    private val owner by lazy {
+        TvAlertOverlayWindowOwner(appContext, canDrawOverlays, addWindow, removeWindow,
+            content = { ui, request, settings ->
+                buildCard(ui, request.title, request.body, request.thumbnail, settings, request.appearance).also { card ->
+                    if (request.homeAssistant && request.thumbnail != null) card.findViewWithTag<TextView>("alert:overlay:title").maxLines = 2
+                }
+            },
+            params = { settings, image, interactive -> layoutParams(settings, image, interactive) },
+            animate = { view, settings, appearance -> animateEntry(view, settings.verticalPosition, appearance.reducedMotion) },
+        )
+    }
+
+    fun showHomeAssistant(
+        server: String, tag: String, identity: AndroidNotificationIdentity, title: String, body: String,
+        appearance: AppSettings, thumbnail: Bitmap? = null, buttons: List<TvAlertOverlayButton> = emptyList(),
+        onDismiss: () -> Unit = {}, updateOnly: Boolean = false, canPresent: () -> Boolean,
+    ) {
+        owner.present(TvAlertOverlayRequest(server, tag, identity, title, body, thumbnail, appearance,
+            homeAssistant = true, priority = 0, buttons = buttons, canPresent = canPresent, onDismiss = onDismiss), updateOnly)
+    }
 
     fun show(
-        profileKey: String,
-        reviewId: String,
-        identity: AndroidNotificationIdentity,
-        title: String,
-        body: String,
-        thumbnail: Bitmap?,
-        appearance: AppSettings,
+        profileKey: String, reviewId: String, identity: AndroidNotificationIdentity, title: String, body: String,
+        thumbnail: Bitmap?, appearance: AppSettings, buttons: List<TvAlertOverlayButton> = emptyList(),
+        canPresent: () -> Boolean = { false }, onDismiss: () -> Unit = {}, priority: Int = 2,
+        updateOnly: Boolean = false,
     ): Boolean {
-        if (!TvAlertOverlayPermission.isGranted(appContext)) return false
-        mainHandler.post {
-            if (!TvAlertOverlayPermission.isGranted(appContext)) return@post
-            showOnMain(profileKey, reviewId, identity, title, body, thumbnail, appearance)
-        }
+        if (!canDrawOverlays()) return false
+        owner.present(TvAlertOverlayRequest(profileKey, reviewId, identity, title, body, thumbnail, appearance,
+            homeAssistant = false, priority = priority, buttons = buttons, canPresent = canPresent, onDismiss = onDismiss), updateOnly)
         return true
     }
 
-    fun dismiss(identity: AndroidNotificationIdentity) {
-        mainHandler.post {
-            active?.takeIf { it.identity == identity }?.let { removeOnMain(it) }
-        }
+    fun dismissHomeAssistant() { owner.removeMatching { it.homeAssistant } }
+    fun dismissFrigate() { owner.removeMatching { !it.homeAssistant }; inline { close() } }
+    fun dismiss(identity: AndroidNotificationIdentity) { owner.removeMatching { it.identity == identity }; inline { removeMatching { it.identity == identity } } }
+    fun dismiss(profileKey: String, reviewId: String) { owner.removeMatching { it.profileKey == profileKey && it.reviewId == reviewId }; inline { removeMatching { it.profileKey == profileKey && it.reviewId == reviewId } } }
+    fun dismissProfile(profileKey: String) { owner.removeMatching { it.profileKey == profileKey }; inline { removeMatching { it.profileKey == profileKey } } }
+    fun dismissAll() { owner.clear(); inline { close() } }
+    fun revalidate() { owner.revalidate(); inline { revalidate() } }
+    fun protectedActionVisible(visible: Boolean) { mainHandler.post {
+        protectedActionVisible = visible
+        if (visible && inlineDelegate.isInitialized()) inlineDelegate.value.close()
+        owner.protectedActionVisible(visible || inlineVisible)
+    } }
+    private fun inline(work: FrigateInlinePreviewOwner.() -> Unit) { mainHandler.post {
+        if (inlineDelegate.isInitialized()) inlineDelegate.value.work()
+    } }
+    internal suspend fun beginInlinePreview(request: InlineRecordingPreview): Long? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+        if (protectedActionVisible) { request.thumbnail?.recycle(); null } else inlineDelegate.value.begin(request)
     }
-
-    fun dismiss(profileKey: String, reviewId: String) {
-        mainHandler.post {
-            active?.takeIf { it.profileKey == profileKey && it.reviewId == reviewId }
-                ?.let { removeOnMain(it) }
-        }
+    internal suspend fun loadInlinePreview(ticket: Long, uri: String, client: okhttp3.OkHttpClient, allowed: () -> Boolean) =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) { inlineDelegate.value.load(ticket, uri, client, allowed) }
+    internal suspend fun unavailableInlinePreview(ticket: Long) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+        inlineDelegate.value.unavailable(ticket)
     }
-
-    fun dismissProfile(profileKey: String) {
-        mainHandler.post {
-            active?.takeIf { it.profileKey == profileKey }?.let { removeOnMain(it) }
-        }
+    fun showSetupPreview(identity: AndroidNotificationIdentity, appearance: AppSettings, canPresent: () -> Boolean, onShown: () -> Unit) {
+        owner.present(TvAlertOverlayRequest("local-setup", identity.tag, identity, "Opah setup preview",
+            "Fictional preview — no message was sent by Home Assistant", null, appearance,
+            homeAssistant = true, priority = 0, buttons = emptyList(), canPresent = canPresent, onDismiss = {}, onShown = onShown))
     }
-
-    fun dismissAll() {
-        mainHandler.post { active?.let { removeOnMain(it) } }
-    }
-
-    private fun showOnMain(
-        profileKey: String,
-        reviewId: String,
-        identity: AndroidNotificationIdentity,
-        title: String,
-        body: String,
-        thumbnail: Bitmap?,
-        appearance: AppSettings,
-    ) {
-        active?.let { removeOnMain(it) }
-        generation += 1L
-        val settings = settingsStore.load()
-        if (settings.displayDurationSeconds == 0) return
-        val card = buildCard(appContext, title, body, thumbnail, settings, appearance)
-        val overlay = ActiveOverlay(
-            profileKey = profileKey,
-            reviewId = reviewId,
-            identity = identity,
-            view = card,
-            generation = generation,
-        )
-        val added = runCatching {
-            windowManager.addView(card, layoutParams(settings, thumbnail != null))
-        }.isSuccess
-        if (!added) return
-        active = overlay
-        animateEntry(card, settings.verticalPosition, appearance.reducedMotion)
-        mainHandler.postDelayed(
-            { active?.takeIf { it.generation == overlay.generation }?.let { removeOnMain(it) } },
-            tvAlertOverlayDisplayDurationMillis(settings.displayDurationSeconds),
-        )
-    }
-
-    private fun removeOnMain(overlay: ActiveOverlay) {
-        if (active === overlay) active = null
-        overlay.view.animate().cancel()
-        runCatching { windowManager.removeViewImmediate(overlay.view) }
-    }
+    suspend fun hasPending(identity: AndroidNotificationIdentity): Boolean = owner.contains(identity)
 
     internal fun buildCard(
         context: Context,
@@ -226,7 +218,7 @@ internal class TvAlertOverlayPresenter(context: Context) {
         includeFontPadding = false
     }
 
-    internal fun layoutParams(settings: TvAlertOverlaySettings, hasThumbnail: Boolean): WindowManager.LayoutParams {
+    internal fun layoutParams(settings: TvAlertOverlaySettings, hasThumbnail: Boolean, interactive: Boolean = false): WindowManager.LayoutParams {
         val availableWidth = appContext.resources.displayMetrics.widthPixels - dp(64)
         val preferredWidth = when {
             !hasThumbnail -> TEXT_ONLY_CARD_WIDTH_DP
@@ -234,7 +226,7 @@ internal class TvAlertOverlayPresenter(context: Context) {
             settings.imageSize == TvAlertOverlayImageSize.MEDIUM -> MEDIUM_IMAGE_CARD_WIDTH_DP
             else -> LARGE_IMAGE_CARD_WIDTH_DP
         }
-        val width = dp(preferredWidth).coerceAtMost(availableWidth).coerceAtLeast(dp(280))
+        val width = dp(if (interactive) preferredWidth.coerceAtLeast(540) else preferredWidth).coerceAtMost(availableWidth).coerceAtLeast(dp(280))
         return WindowManager.LayoutParams(
             width,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -244,9 +236,11 @@ internal class TvAlertOverlayPresenter(context: Context) {
                 @Suppress("DEPRECATION")
                 WindowManager.LayoutParams.TYPE_PHONE
             },
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or if (interactive) {
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+            } else {
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            },
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = overlayGravity(settings)
@@ -294,14 +288,6 @@ internal class TvAlertOverlayPresenter(context: Context) {
     }
 
     private fun dp(value: Int): Int = (value * appContext.resources.displayMetrics.density).toInt()
-
-    private data class ActiveOverlay(
-        val profileKey: String,
-        val reviewId: String,
-        val identity: AndroidNotificationIdentity,
-        val view: View,
-        val generation: Long,
-    )
 
     private companion object {
         const val TEXT_ONLY_CARD_WIDTH_DP = 410

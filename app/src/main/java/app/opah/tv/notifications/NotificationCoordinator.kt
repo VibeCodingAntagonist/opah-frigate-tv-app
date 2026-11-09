@@ -24,6 +24,11 @@ data class AlertNotificationPost(
     val model: NotificationRenderModel,
     val alertBehavior: NotificationAlertBehavior,
     val contentIntentKind: AlertContentIntentKind = AlertContentIntentKind.EVENT,
+    val privacyEpoch: Long? = null,
+    val policyVersion: Long? = null,
+    val recognizedPlateLabels: Set<String> = emptySet(),
+    val overlayCameraKey: String? = null,
+    val presentationRevision: Long? = null,
 ) {
     init {
         require(profileKey.isNotBlank() && profileKey.length <= 128 && profileKey.none(Char::isISOControl))
@@ -120,6 +125,7 @@ class NotificationCoordinator(
     private val platform: AlertNotificationPlatform,
     private val identities: NotificationIdentityFactory = NotificationIdentityFactory(),
     private val privacyEngine: PrivacyDecisionEngine = PrivacyDecisionEngine(),
+    private val pause: NotificationPauseGate = NotificationPauseGate.NONE,
 ) {
     private val operationMutex = Mutex()
 
@@ -264,6 +270,7 @@ class NotificationCoordinator(
         operationMutex.withLock { processLocked(input) }
 
     private suspend fun processLocked(input: NotificationProcessingInput): NotificationProcessingResult {
+        val admission = pause.snapshot()
         val review = input.review
         val identity = identities.eventIdentity(review.profileKey, review.id)
         var recoveredPendingOperation = false
@@ -285,6 +292,9 @@ class NotificationCoordinator(
             }
         }
 
+        if (admission.suppressesFrigate(review.startEpochSeconds) || prior?.terminalReason == "SHARED_PAUSE") {
+            return suppressPaused(input, identity, prior)
+        }
         val initialPrivacy = runCatching { input.privacySnapshots.snapshot() }
             .getOrElse {
                 return executeCancel(
@@ -412,7 +422,17 @@ class NotificationCoordinator(
                 )
             }
         }
-        return execute(input, identity, prior, command, initialPrivacy.epoch)
+        if (!pause.snapshot().permits(admission.revision)) return suppressPaused(input, identity, prior)
+        return execute(input, identity, prior, command, initialPrivacy.epoch, admission.revision)
+    }
+
+    private suspend fun suppressPaused(input: NotificationProcessingInput, identity: AndroidNotificationIdentity,
+        prior: NotificationLedgerRecord?): NotificationProcessingResult {
+        if (prior?.terminalReason == "SHARED_PAUSE" && !prior.notificationActive && prior.pendingOperation == null)
+            return NotificationProcessingResult.NoChange(AlertDecisionReason.SHARED_PAUSE)
+        val suppressed = (prior ?: emptyRecord(input, identity)).copy(actionNonce = identities.newActionNonce(),
+            contentFingerprint = null, openTarget = null, notificationActive = false)
+        return executeCancel(input, identity, suppressed, AlertDecisionReason.SHARED_PAUSE, purge = true)
     }
 
     private suspend fun execute(
@@ -421,6 +441,7 @@ class NotificationCoordinator(
         prior: NotificationLedgerRecord?,
         command: NotificationLifecycleCommand,
         privacyEpoch: Long?,
+        presentationRevision: Long? = null,
     ): NotificationProcessingResult = when (command) {
         is NotificationLifecycleCommand.NoOp -> NotificationProcessingResult.NoChange(command.reason)
         is NotificationLifecycleCommand.Post -> executePost(
@@ -429,6 +450,7 @@ class NotificationCoordinator(
             prior = prior,
             command = command,
             privacyEpoch = requireNotNull(privacyEpoch),
+            presentationRevision = presentationRevision,
         )
         is NotificationLifecycleCommand.Cancel -> executeCancel(
             input,
@@ -452,6 +474,7 @@ class NotificationCoordinator(
         prior: NotificationLedgerRecord?,
         command: NotificationLifecycleCommand.Post,
         privacyEpoch: Long,
+        presentationRevision: Long?,
     ): NotificationProcessingResult {
         val operationId = identities.newActionNonce()
         val actionNonce = prior?.actionNonce ?: identities.newActionNonce()
@@ -487,6 +510,7 @@ class NotificationCoordinator(
             terminalReason = null,
             reconciledAtEpochMillis = input.nowEpochMillis,
         )
+        if (!pause.snapshot().permits(presentationRevision ?: pause.snapshot().revision)) return suppressPaused(input, identity, prior)
         if (!stage(staged)) return NotificationProcessingResult.Deferred
         val posted = runCatching {
             platform.post(
@@ -497,9 +521,15 @@ class NotificationCoordinator(
                     actionNonce = actionNonce,
                     model = command.renderModel,
                     alertBehavior = command.alertBehavior,
+                    privacyEpoch = privacyEpoch,
+                    policyVersion = input.configuration.policyVersion,
+                    recognizedPlateLabels = input.recognizedPlateLabels.toSet(),
+                    overlayCameraKey = identities.eventIdentity(input.review.profileKey, requireNotNull(input.review.camera)).tag,
+                    presentationRevision = presentationRevision,
                 ),
             )
         }.getOrDefault(false)
+        if (!pause.snapshot().permits(presentationRevision ?: pause.snapshot().revision)) return suppressPaused(input, identity, staged)
         if (!posted) return NotificationProcessingResult.Deferred
         return if (settle(staged, active = true, input.nowEpochMillis)) {
             NotificationProcessingResult.Posted(command.alertBehavior)

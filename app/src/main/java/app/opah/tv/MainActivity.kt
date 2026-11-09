@@ -22,6 +22,8 @@ import androidx.core.content.ContextCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.Lifecycle
+import app.opah.tv.homeassistant.android.HomeAssistantForegroundService
 import androidx.compose.runtime.mutableStateOf
 import app.opah.tv.data.model.RecordingExport
 import app.opah.tv.notifications.android.TvAlertIntentContract
@@ -34,6 +36,8 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @androidx.media3.common.util.UnstableApi
 class MainActivity : ComponentActivity() {
@@ -151,6 +155,15 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         viewModel.refreshPrivacyUnlockState()
         viewModel.refreshTvAlertDeliveryStatus()
+        if (!BuildConfig.DOCUMENTATION_MODE) {
+            lifecycleScope.launch {
+                val connection = (application as OpahApplication).container.homeAssistantConnection
+                val enabled = withContext(Dispatchers.IO) { connection.enabled() }
+                if (enabled && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                    HomeAssistantForegroundService.start(this@MainActivity)
+                }
+            }
+        }
         if (awaitingOverlayPermission) {
             awaitingOverlayPermission = false
             val action = pendingNotificationAction
@@ -173,7 +186,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
-        (application as OpahApplication).container.onAppBackgrounded()
+        (application as OpahApplication).container.onMainUiStopped()
         super.onStop()
     }
 
@@ -196,7 +209,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         val payload = TvAlertIntentContract.payload(intent) ?: return
-        viewModel.openTvAlert(payload.profileKey, payload.reviewId, payload.actionNonce)
+        viewModel.openTvAlert(payload.profileKey, payload.reviewId, payload.actionNonce, payload.preference)
     }
 
     private fun requestEnableTvAlerts() {
@@ -261,16 +274,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openNotificationSettings() {
-        val settingsIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
-        } else {
-            Intent(
-                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                "package:$packageName".toUri(),
-            )
+        app.opah.tv.notifications.android.OpahNotificationSettings.open(this).guidance?.let {
+            android.widget.Toast.makeText(this, it, android.widget.Toast.LENGTH_LONG).show()
         }
-        runCatching { startActivity(settingsIntent) }
     }
 
     private fun openOverlaySettings(

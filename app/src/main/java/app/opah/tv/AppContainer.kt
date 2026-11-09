@@ -73,6 +73,16 @@ import app.opah.tv.notifications.AlertSnoozeScope
 import app.opah.tv.notifications.AlertDecisionReason
 import app.opah.tv.notifications.AlertNotificationPost
 import app.opah.tv.notifications.AlertContentIntentKind
+import app.opah.tv.homeassistant.HomeAssistantApiClient
+import app.opah.tv.homeassistant.HomeAssistantConnection
+import app.opah.tv.homeassistant.android.HomeAssistantSecretStore
+import app.opah.tv.homeassistant.android.HomeAssistantNotifications
+import app.opah.tv.homeassistant.HomeAssistantDisclosure
+import app.opah.tv.notifications.android.TvAlertOverlayPresenter
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.collect
 import app.opah.tv.notifications.AlertOpenTarget
 import app.opah.tv.notifications.NotificationActionKind
 import app.opah.tv.notifications.NotificationAlertBehavior
@@ -84,6 +94,12 @@ import app.opah.tv.notifications.NotificationCoordinator
 import app.opah.tv.notifications.ProcessAlertNotificationOwner
 import app.opah.tv.notifications.ProcessAlertModeOwner
 import app.opah.tv.notifications.TvAlertOpenResolution
+import app.opah.tv.notifications.TvAlertOpenPreference
+import app.opah.tv.notifications.frigateOverlayMayPresent
+import app.opah.tv.notifications.AlertEvaluationInput
+import app.opah.tv.notifications.AlertPrivacyContext
+import app.opah.tv.notifications.AlertNotificationLedger
+import app.opah.tv.notifications.AlertEvaluator
 import app.opah.tv.notifications.android.AndroidAlertNotificationPlatform
 import app.opah.tv.notifications.android.AndroidNotificationChannels
 import app.opah.tv.notifications.android.TvAlertActivationResult
@@ -102,6 +118,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 
 class AppContainer(context: Context) {
@@ -111,6 +128,7 @@ class AppContainer(context: Context) {
     private val privacyScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val realtimeProcessScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val alertProcessScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val homeAssistantProcessScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val monitorPresentedReviewId = MutableStateFlow<String?>(null)
     val secureSessionStore = SecureSessionStore(appContext)
     internal val pinCredentialStore by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
@@ -153,6 +171,79 @@ class AppContainer(context: Context) {
         invalidateCapabilities = frigateRepository::invalidateCapabilities,
     )
     val settingsRepository = SettingsRepository(appContext)
+    internal val notificationPause = app.opah.tv.notifications.SharedNotificationPause(
+        app.opah.tv.notifications.android.AndroidNotificationPauseStore(appContext), System::currentTimeMillis,
+        SystemClock::elapsedRealtime, { runCatching { android.provider.Settings.Global.getInt(appContext.contentResolver,
+            android.provider.Settings.Global.BOOT_COUNT) }.getOrDefault(0) })
+    private val notificationPauseMutation = kotlinx.coroutines.sync.Mutex()
+
+    internal suspend fun changeSharedNotificationPause(minutes: Int?): Boolean {
+        notificationPauseMutation.lock()
+        try {
+            return kotlinx.coroutines.withContext(Dispatchers.IO) {
+                if (!canManageConnectionSetup()) return@withContext false
+                val changed = if (minutes == null) notificationPause.resume() else notificationPause.pause(minutes)
+                if (notificationPause.snapshot().paused) clearPausedPresentations()
+                changed
+            }
+        } finally { notificationPauseMutation.unlock() }
+    }
+    private fun clearPausedPresentations() {
+        alertNotificationPlatform.clearForSharedPause()
+        homeAssistantNotifications.clearAll()
+        tvAlertOverlays.dismissAll()
+    }
+    private val tvAlertOverlays by lazy {
+        TvAlertOverlayPresenter(appContext).also { presenter ->
+            alertProcessScope.launch {
+                kotlinx.coroutines.flow.combine(privacyRepository.state, realtimeRuntime.owner.state, alertConfigurationRepository.state) {
+                    _, _, _ -> Unit
+                }.collect { presenter.revalidate() }
+            }
+        }
+    }
+    internal val homeAssistantSecretStore by lazy { HomeAssistantSecretStore(appContext) }
+    @Volatile private var homeAssistantHasFrigateProfile: Boolean? = null
+    internal val homeAssistantNotifications: HomeAssistantNotifications by lazy {
+        HomeAssistantNotifications(appContext, homeAssistantSecretStore, tvAlertOverlays, settingsRepository.settings,
+            richPolicy = ::homeAssistantRichPolicy,
+            connected = { homeAssistantConnection.state.value.phase == app.opah.tv.homeassistant.HomeAssistantConnectionPhase.CONNECTED },
+            disclosure = { homeAssistantRichPolicy().disclosure },
+            pause = notificationPause,
+        ).also { platform ->
+            homeAssistantProcessScope.launch {
+                val cameraPrivacy = realtimeRuntime.owner.state.map {
+                    listOf(it.generation, it.profileState, it.authenticationState, it.cameraScope, it.authorizationScopeEpoch)
+                }.distinctUntilChanged()
+                kotlinx.coroutines.flow.combine(privacyRepository.state, cameraPrivacy, profileRepository.hasSavedProfile) {
+                    _, _, hasProfile -> homeAssistantHasFrigateProfile = hasProfile
+                }.drop(1).collect { platform.clearAll() }
+            }
+        }
+    }
+
+    internal fun homeAssistantRichPolicy(): app.opah.tv.homeassistant.HomeAssistantRichPolicy {
+        val ready = privacyRepository.state.value as? app.opah.tv.privacy.PrivacyRepositoryState.Ready
+            ?: return app.opah.tv.homeassistant.HomeAssistantRichPolicy()
+        if (ready.pinRecordCorrupt) return app.opah.tv.homeassistant.HomeAssistantRichPolicy(epoch = ready.policy.epoch)
+        return app.opah.tv.homeassistant.homeAssistantRichPolicy(notificationActionPrivacy(), homeAssistantHasFrigateProfile,
+            realtimeRuntime.owner.currentState())
+    }
+
+    internal fun canManageConnectionSetup(): Boolean {
+        val snapshot = notificationActionPrivacy()
+        val decision = PrivacyDecisionEngine().decide(PrivacyRequest(PrivacySurface.SETTINGS,
+            PrivacyTarget.LocalAction(app.opah.tv.privacy.PrivacyLocalAction.OPEN_SETTINGS), snapshot.epoch), snapshot)
+        return decision is PrivacyDecision.Allow || decision is PrivacyDecision.AllowRedacted
+    }
+    internal fun showSetupPreview(identity: app.opah.tv.notifications.AndroidNotificationIdentity,
+        appearance: app.opah.tv.data.model.AppSettings, active: () -> Boolean, shown: () -> Unit) {
+        tvAlertOverlays.showSetupPreview(identity, appearance, { !notificationPause.snapshot().paused && active() && canManageConnectionSetup() }, shown)
+    }
+    internal fun dismissSetupPreview(identity: app.opah.tv.notifications.AndroidNotificationIdentity) { tvAlertOverlays.dismiss(identity) }
+    internal val homeAssistantConnection: HomeAssistantConnection by lazy {
+        HomeAssistantConnection(HomeAssistantApiClient(), homeAssistantSecretStore, homeAssistantNotifications, homeAssistantProcessScope, pause = notificationPause)
+    }
     private val tvAlertOverlaySettingsStore = TvAlertOverlaySettingsStore(appContext)
     private val updateApiClient = GitHubReleaseApiClient(
         httpClient = GitHubReleaseApiClient.defaultClient(),
@@ -235,6 +326,12 @@ class AppContainer(context: Context) {
             context = appContext,
             client = httpClient,
             appearanceSettings = settingsRepository.settings,
+            overlays = tvAlertOverlays,
+            overlayMayPresent = ::mayPresentFrigateOverlay,
+            overlayTargets = ::frigateOverlayTargets,
+            pause = notificationPause,
+            inlinePreviewAllowed = ::mayPlayFrigateInlinePreview,
+            inlinePreview = ::startFrigateInlinePreview,
             profile = { requestedProfileKey ->
                 profileRepository.load()?.takeIf { profile ->
                     compatibilityIdentityFactory.derive(
@@ -249,6 +346,7 @@ class AppContainer(context: Context) {
         NotificationCoordinator(
             ledgerStore = notificationLedgerStore,
             platform = alertNotificationPlatform,
+            pause = notificationPause,
         )
     }
     private val alertModeOwnerDelegate = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
@@ -276,6 +374,7 @@ class AppContainer(context: Context) {
             transportState = realtimeRuntime.owner.state,
             modeState = alertModeOwnerDelegate.value.state,
             monitorReviewId = monitorPresentedReviewId,
+            pauseState = notificationPause.state,
             plateLabels = { requestedProfileKey, camera, detectionIds, authorizedCameraIds ->
                 val profile = profileRepository.load()?.takeIf { candidate ->
                     compatibilityIdentityFactory.derive(
@@ -349,6 +448,32 @@ class AppContainer(context: Context) {
         }
     }
 
+    private val homeAssistantActionUiCount = java.util.concurrent.atomic.AtomicInteger()
+    private val protectedPinPromptCount = java.util.concurrent.atomic.AtomicInteger()
+    private fun updateProtectedOverlayUi() {
+        tvAlertOverlays.protectedActionVisible(homeAssistantActionUiCount.get() > 0 || protectedPinPromptCount.get() > 0)
+    }
+    internal fun onProtectedPinPromptStarted() {
+        protectedPinPromptCount.incrementAndGet()
+        updateProtectedOverlayUi()
+    }
+    internal fun onProtectedPinPromptStopped() {
+        protectedPinPromptCount.updateAndGet { (it - 1).coerceAtLeast(0) }
+        updateProtectedOverlayUi()
+    }
+    internal fun onHomeAssistantActionUiStarted() {
+        homeAssistantActionUiCount.incrementAndGet()
+        updateProtectedOverlayUi()
+    }
+    internal fun onMainUiStopped() { if (homeAssistantActionUiCount.get() == 0) onAppBackgrounded() }
+    internal fun onHomeAssistantActionUiStopped() {
+        if (homeAssistantActionUiCount.decrementAndGet() <= 0) {
+            homeAssistantActionUiCount.set(0)
+            onAppBackgrounded()
+            updateProtectedOverlayUi()
+        }
+    }
+
     internal fun onSignedOut() {
         alertNotificationPlatform.clearEphemeralContent()
         if (alertNotificationOwnerDelegate.isInitialized()) {
@@ -404,8 +529,123 @@ class AppContainer(context: Context) {
 
     internal fun tvAlertOverlaySettings(): TvAlertOverlaySettings = tvAlertOverlaySettingsStore.load()
 
-    internal fun setTvAlertOverlaySettings(settings: TvAlertOverlaySettings): TvAlertOverlaySettings =
-        tvAlertOverlaySettingsStore.save(settings)
+    internal fun setTvAlertOverlaySettings(settings: TvAlertOverlaySettings): TvAlertOverlaySettings {
+        val saved = tvAlertOverlaySettingsStore.save(settings)
+        tvAlertOverlays.dismissAll()
+        return saved
+    }
+
+    internal suspend fun changeInlineRecordingPreviews(enabled: Boolean): TvAlertOverlaySettings? {
+        if (!canManageConnectionSetup() || notificationActionPrivacy().guestMode) return null
+        return setTvAlertOverlaySettings(tvAlertOverlaySettingsStore.load().copy(inlineRecordingPreviews = enabled))
+    }
+
+    private fun mayPresentFrigateOverlay(request: AlertNotificationPost): Boolean {
+        if (notificationPause.snapshot().paused) return false
+        val transport = realtimeRuntime.owner.currentState()
+        val currentPrivacy = notificationActionPrivacy()
+        if (request.contentIntentKind == app.opah.tv.notifications.AlertContentIntentKind.LOCAL_TEST) {
+            val ready = privacyRepository.state.value as? app.opah.tv.privacy.PrivacyRepositoryState.Ready ?: return false
+            return !ready.pinRecordCorrupt && currentPrivacy.globalNotificationDisclosure != app.opah.tv.privacy.NotificationDisclosure.NEVER &&
+                !(currentPrivacy.guestMode && currentPrivacy.guestNotificationDisclosure == app.opah.tv.privacy.NotificationDisclosure.NEVER) &&
+                (!currentPrivacy.pinConfigured || PinScope.SETTINGS !in currentPrivacy.protectedScopes ||
+                    PinScope.SETTINGS in currentPrivacy.pinUnlockProof?.scopes.orEmpty())
+        }
+        val process = realtimeRuntime.awareness.state.value
+        val configuration = (alertConfigurationRepository.state.value as? AlertConfigurationState.Ready)?.configuration
+        val review = process.ledger.review(request.reviewId)
+        if (notificationPause.snapshot().suppressesFrigate(review?.startEpochSeconds)) return false
+        val profileKey = (transport.profileState as? RealtimeProfileState.Ready)?.profile?.id
+        if (!frigateOverlayMayPresent(request, profileKey,
+                !process.desynchronized && process.ledger.profileKey == profileKey &&
+                    process.authorizedCameraIds == currentPrivacy.allowedCameraIds,
+                configuration?.enabled == true, configuration?.policyVersion, review, currentPrivacy)
+        ) return false
+        val policy = configuration ?: return false
+        val mode = alertModeOwnerDelegate.value.state.value
+        return AlertEvaluator.evaluate(AlertEvaluationInput(
+            review = review ?: return false, authorizedCameraIds = currentPrivacy.allowedCameraIds,
+            policy = policy.policy, currentFrigateMode = mode.currentMode.takeIf { mode.fresh && mode.profileKey == profileKey },
+            nowEpochMillis = System.currentTimeMillis(), timeZone = java.util.TimeZone.getDefault(), snoozes = policy.snoozes,
+            privacy = AlertPrivacyContext(globalPrivacy = request.model.privacy),
+            ledger = AlertNotificationLedger(lifecycle = review.lifecycle), recognizedPlateLabels = request.recognizedPlateLabels,
+        )).eligible
+    }
+
+    private fun notificationActionPrivacy(): app.opah.tv.privacy.PrivacySnapshot {
+        val transport = realtimeRuntime.owner.currentState()
+        val scope = (transport.cameraScope as? CameraScopeState.Fresh)?.evidence?.takeIf { it.boundsValid }
+        return privacyRepository.snapshot(PrivacySessionEvidence(
+            authenticated = transport.authenticationState == RealtimeAuthenticationState.AUTHENTICATED,
+            authorizationFreshness = if (scope == null) AuthorizationFreshness.UNKNOWN else AuthorizationFreshness.FRESH,
+            allowedCameraIds = scope?.allowedCameraIds.orEmpty(),
+        ), SystemClock.elapsedRealtime())
+    }
+
+    private fun mayPlayFrigateInlinePreview(request: AlertNotificationPost): Boolean {
+        if (!mayPresentFrigateOverlay(request)) return false
+        val options = tvAlertOverlaySettingsStore.load()
+        return app.opah.tv.notifications.frigateInlinePreviewAllowed(request,
+            realtimeRuntime.awareness.state.value.ledger.review(request.reviewId), notificationActionPrivacy(),
+            options.interactiveFrigateAlerts, options.inlineRecordingPreviews)
+    }
+
+    private fun startFrigateInlinePreview(request: AlertNotificationPost, picture: android.graphics.Bitmap?, appearance: app.opah.tv.data.model.AppSettings,
+        deadline: Long, openInOpah: () -> Unit) {
+        val revision = request.presentationRevision ?: notificationPause.snapshot().revision
+        alertProcessScope.launch(Dispatchers.Main.immediate) {
+            var ticket: Long? = null
+            var handedOver = false
+            try {
+                val allowed = { notificationPause.snapshot().permits(revision) && mayPlayFrigateInlinePreview(request) }
+                handedOver = true
+                ticket = tvAlertOverlays.beginInlinePreview(app.opah.tv.notifications.android.InlineRecordingPreview(
+                    request.profileKey, request.reviewId, request.identity, request.model.title, appearance, picture, deadline,
+                    canPresent = allowed, openInOpah = openInOpah))
+                val active = ticket ?: return@launch
+                val uri = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    val resolved = resolveTvAlertOpen(request.profileKey, request.reviewId, request.actionNonce,
+                        TvAlertOpenPreference.RECORDING, consumeNotification = false)
+                    val item = (resolved as? TvAlertOpenResolution.RecordedReview)?.item
+                    val profile = notificationProfile(request.profileKey)
+                    if (item != null && profile != null && allowed()) frigateRepository.reviewPlaybackUrl(profile, item) else null
+                }
+                if (uri == null || !allowed()) tvAlertOverlays.unavailableInlinePreview(active)
+                else tvAlertOverlays.loadInlinePreview(active, uri, httpClient, allowed)
+            } catch (error: Exception) {
+                if (ticket != null) kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { tvAlertOverlays.unavailableInlinePreview(ticket) }
+                else if (!handedOver) picture?.recycle()
+                if (error is kotlinx.coroutines.CancellationException) throw error
+            }
+        }
+    }
+
+    private suspend fun frigateOverlayTargets(request: AlertNotificationPost): List<TvAlertOpenPreference> {
+        if (!mayPresentFrigateOverlay(request)) return emptyList()
+        val review = realtimeRuntime.awareness.state.value.ledger.review(request.reviewId) ?: return emptyList()
+        val item = notificationReviewItem(review)
+        val profile = notificationProfile(request.profileKey)
+        val recorded = review.lifecycle == AwarenessReviewLifecycle.ENDED && item != null && profile != null &&
+            withTimeoutOrNull(1_500) { frigateRepository.reviewRecordingAvailable(profile, item).getOrDefault(false) } == true
+        if (!mayPresentFrigateOverlay(request)) return emptyList()
+        return if (recorded) listOf(TvAlertOpenPreference.RECORDING, TvAlertOpenPreference.LIVE)
+            else if (review.lifecycle == AwarenessReviewLifecycle.ACTIVE) listOf(TvAlertOpenPreference.LIVE)
+            else listOf(TvAlertOpenPreference.ACTIVITY, TvAlertOpenPreference.LIVE)
+    }
+
+    private suspend fun notificationProfile(profileKey: String) = profileRepository.load()?.takeIf { profile ->
+        compatibilityIdentityFactory.derive(CompatibilityIdentityDomain.PROFILE, profile.compatibilityIdentityComponents()).value == profileKey
+    }
+
+    private fun notificationReviewItem(review: app.opah.tv.awareness.AwarenessReview): app.opah.tv.data.model.ReviewItem? {
+        val camera = review.camera ?: return null
+        val start = review.startEpochSeconds ?: return null
+        return app.opah.tv.data.model.ReviewItem(review.id, camera, start, review.endEpochSeconds,
+            app.opah.tv.data.model.ReviewSeverity.entries.firstOrNull { it.name == review.severity.name }
+                ?: app.opah.tv.data.model.ReviewSeverity.UNKNOWN,
+            thumbnailPath = review.thumbnail, objects = review.objects.toList(), zones = review.zones.toList(),
+            hasBeenReviewed = review.reviewed == true, detectionIds = review.detectionIds.toList())
+    }
 
     internal suspend fun postLocalTestAlert(includeImage: Boolean): Boolean {
         val configuration = (alertConfigurationRepository.state.value as? AlertConfigurationState.Ready)
@@ -453,19 +693,23 @@ class AppContainer(context: Context) {
         profileKey: String,
         reviewId: String,
         actionNonce: String,
-    ): Boolean = notificationCoordinator.dismiss(
-        profileKey = profileKey,
-        reviewId = reviewId,
-        actionNonce = actionNonce,
-        nowEpochMillis = System.currentTimeMillis().coerceAtLeast(0L),
-    )
+    ): Boolean {
+        if (!notificationCoordinator.dismiss(profileKey, reviewId, actionNonce, System.currentTimeMillis().coerceAtLeast(0L))) return false
+        alertNotificationPlatform.cancel(NotificationIdentityFactory().eventIdentity(profileKey, reviewId))
+        alertNotificationPlatform.purgeEphemeralContent(profileKey, reviewId)
+        return true
+    }
 
     /** Resolves an opaque notification tap without trusting any display content in the Intent. */
     internal suspend fun resolveTvAlertOpen(
         profileKey: String,
         reviewId: String,
         actionNonce: String,
+        preference: TvAlertOpenPreference = TvAlertOpenPreference.DEFAULT,
+        consumeNotification: Boolean = true,
     ): TvAlertOpenResolution {
+        val presentation = notificationPause.snapshot()
+        if (presentation.paused) return TvAlertOpenResolution.Unavailable
         notificationCoordinator.activeActionRecord(profileKey, reviewId, actionNonce)
             ?: return TvAlertOpenResolution.Unavailable
 
@@ -511,6 +755,7 @@ class AppContainer(context: Context) {
         )
         val review = processState.ledger.review(reviewId)
             ?.takeIf { it.profileKey == profileKey }
+        if (notificationPause.snapshot().suppressesFrigate(review?.startEpochSeconds)) return TvAlertOpenResolution.Unavailable
         val resolution = if (review == null) {
             if (allowedCameraIds.isEmpty()) return TvAlertOpenResolution.Unavailable
             if (
@@ -541,7 +786,7 @@ class AppContainer(context: Context) {
                 ?: return TvAlertOpenResolution.Unavailable
             val request = PrivacyRequest(
                 surface = PrivacySurface.DEEP_LINK,
-                target = PrivacyTarget.Review(
+                target = if (preference == TvAlertOpenPreference.LIVE) PrivacyTarget.Camera(camera) else PrivacyTarget.Review(
                     reviewId = review.id,
                     cameraId = camera,
                     containsRecognition = review.subLabels.isNotEmpty(),
@@ -551,22 +796,46 @@ class AppContainer(context: Context) {
             when (val decision = PrivacyDecisionEngine().decide(request, privacySnapshot)) {
                 is PrivacyDecision.Allow,
                 is PrivacyDecision.AllowRedacted,
-                -> when (review.lifecycle) {
-                    AwarenessReviewLifecycle.ACTIVE -> TvAlertOpenResolution.LiveCamera(camera)
-                    AwarenessReviewLifecycle.ENDED -> TvAlertOpenResolution.RecordedReview(review.id)
-                    AwarenessReviewLifecycle.UNKNOWN -> TvAlertOpenResolution.Activity(expired = true)
+                -> when {
+                    preference == TvAlertOpenPreference.LIVE -> TvAlertOpenResolution.LiveCamera(camera)
+                    preference == TvAlertOpenPreference.ACTIVITY -> TvAlertOpenResolution.Activity(expired = false)
+                    preference == TvAlertOpenPreference.DEFAULT && review.lifecycle == AwarenessReviewLifecycle.ACTIVE ->
+                        TvAlertOpenResolution.LiveCamera(camera)
+                    review.lifecycle == AwarenessReviewLifecycle.ENDED -> {
+                        val item = notificationReviewItem(review) ?: return TvAlertOpenResolution.Activity(expired = true)
+                        val profile = notificationProfile(profileKey) ?: return TvAlertOpenResolution.Unavailable
+                        val available = withTimeoutOrNull(2_000) { frigateRepository.reviewRecordingAvailable(profile, item) }
+                            ?: return TvAlertOpenResolution.RetryLater
+                        if (available.isFailure) return TvAlertOpenResolution.RetryLater
+                        if (available.getOrDefault(false)) TvAlertOpenResolution.RecordedReview(review.id, item.copy(recordingAvailable = true))
+                        else TvAlertOpenResolution.Activity(expired = true)
+                    }
+                    else -> TvAlertOpenResolution.Activity(expired = true)
                 }
                 is PrivacyDecision.RequirePin -> return TvAlertOpenResolution.PrivacyBlocked
                 is PrivacyDecision.Deny -> return decision.toTvAlertBlockedResolution()
             }
         }
 
+        // Network availability checks may suspend; revoke the earlier grant before consuming a tap.
+        val latestPrivacy = notificationActionPrivacy()
+        if (latestPrivacy.epoch != privacySnapshot.epoch || !latestPrivacy.authenticated ||
+            latestPrivacy.authorizationFreshness != AuthorizationFreshness.FRESH ||
+            latestPrivacy.allowedCameraIds != allowedCameraIds || latestPrivacy.pinUnlockProof != privacySnapshot.pinUnlockProof ||
+            (realtimeRuntime.owner.currentState().profileState as? RealtimeProfileState.Ready)?.profile?.id != profileKey
+        ) return TvAlertOpenResolution.PrivacyBlocked
+        if (!notificationPause.snapshot().permits(presentation.revision)) return TvAlertOpenResolution.Unavailable
+        if (!consumeNotification) return resolution
         val consumed = notificationCoordinator.acknowledgeOpen(
             profileKey = profileKey,
             reviewId = reviewId,
             actionNonce = actionNonce,
             nowEpochMillis = System.currentTimeMillis().coerceAtLeast(0L),
         )
+        if (consumed) {
+            alertNotificationPlatform.cancel(NotificationIdentityFactory().eventIdentity(profileKey, reviewId))
+            alertNotificationPlatform.purgeEphemeralContent(profileKey, reviewId)
+        }
         return if (consumed) resolution else TvAlertOpenResolution.Unavailable
     }
 
@@ -584,6 +853,7 @@ class AppContainer(context: Context) {
         reviewId: String,
         actionNonce: String,
     ): Boolean {
+        if (notificationPause.snapshot().paused) return false
         val record = notificationCoordinator.activeActionRecord(profileKey, reviewId, actionNonce)
             ?: return false
         val processState = realtimeRuntime.awareness.state.value
@@ -591,6 +861,13 @@ class AppContainer(context: Context) {
             ?.takeIf { it.profileKey == profileKey }
             ?: return false
         val camera = review.camera?.takeIf(processState.authorizedCameraIds::contains) ?: return false
+        if (notificationPause.snapshot().suppressesFrigate(review.startEpochSeconds)) return false
+        val privacy = notificationActionPrivacy()
+        val decision = PrivacyDecisionEngine().decide(
+            PrivacyRequest(PrivacySurface.NOTIFICATION, PrivacyTarget.Review(reviewId, camera), privacy.epoch), privacy,
+        )
+        if (decision !is PrivacyDecision.Allow && decision !is PrivacyDecision.AllowRedacted) return false
+        if (processState.desynchronized || processState.authorizedCameraIds != privacy.allowedCameraIds) return false
         val configuration = (alertConfigurationRepository.state.value as? AlertConfigurationState.Ready)
             ?.configuration
             ?.takeIf { it.profileKey == profileKey && it.enabled }
@@ -745,6 +1022,15 @@ class AppContainer(context: Context) {
     internal fun updateMonitorPresentedReview(reviewId: String?) {
         monitorPresentedReviewId.value = reviewId?.takeIf {
             it.isNotBlank() && it.length <= 256 && it.none(Char::isISOControl)
+        }
+    }
+
+    init {
+        alertProcessScope.launch {
+            notificationPause.state.collect { if (it.paused && notificationPause.snapshot().paused) clearPausedPresentations() }
+        }
+        alertProcessScope.launch {
+            while (true) { notificationPause.snapshot(); delay(1_000) }
         }
     }
 

@@ -34,6 +34,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -43,7 +44,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
-import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
@@ -65,6 +65,7 @@ import kotlinx.coroutines.flow.collect
 @Composable
 internal fun MonitorModeScreen(
     state: MonitorModeUiState,
+    stretchedCameraNames: Set<String>,
     onPreset: (MonitorPreset) -> Unit,
     onManualCamera: (String) -> Unit,
     onPlaybackReady: () -> Unit,
@@ -151,23 +152,27 @@ internal fun MonitorModeScreen(
                 state.liveCompatibilityRequestId != null -> MonitorLiveVideo(
                 requestId = state.liveCompatibilityRequestId,
                 videoOnly = !state.audioEnabled,
+                stretched = promotedCamera.name in stretchedCameraNames,
                 onReady = onPlaybackReady,
                 onFailed = onPlaybackFailed,
             )
             promotedCamera != null -> MonitorSnapshot(
                 camera = promotedCamera,
+                stretched = promotedCamera.name in stretchedCameraNames,
                 cachedBitmap = cachedBitmap,
                 refreshBitmap = refreshBitmap,
                 modifier = Modifier.fillMaxSize(),
             )
             patrolCamera != null -> MonitorSnapshot(
                 camera = patrolCamera,
+                stretched = patrolCamera.name in stretchedCameraNames,
                 cachedBitmap = cachedBitmap,
                 refreshBitmap = refreshBitmap,
                 modifier = Modifier.fillMaxSize(),
             )
             visibleCameras.isNotEmpty() -> MonitorSnapshotGrid(
                 cameras = visibleCameras,
+                stretchedCameraNames = stretchedCameraNames,
                 onManualCamera = onManualCamera,
                 cachedBitmap = cachedBitmap,
                 refreshBitmap = refreshBitmap,
@@ -239,6 +244,7 @@ internal fun MonitorModeScreen(
 @Composable
 private fun MonitorSnapshotGrid(
     cameras: List<Camera>,
+    stretchedCameraNames: Set<String>,
     onManualCamera: (String) -> Unit,
     cachedBitmap: (String) -> Bitmap?,
     refreshBitmap: suspend (String, Int) -> Bitmap?,
@@ -253,7 +259,13 @@ private fun MonitorSnapshotGrid(
             accessibilityLabel = "Open ${camera.displayName}",
             modifier = modifier,
         ) {
-            MonitorSnapshot(camera, cachedBitmap, refreshBitmap, Modifier.fillMaxSize())
+            MonitorSnapshot(
+                camera,
+                camera.name in stretchedCameraNames,
+                cachedBitmap,
+                refreshBitmap,
+                Modifier.fillMaxSize(),
+            )
         }
     }
     when (cameras.size) {
@@ -281,6 +293,7 @@ private fun MonitorSnapshotGrid(
 @Composable
 private fun MonitorSnapshot(
     camera: Camera,
+    stretched: Boolean,
     cachedBitmap: (String) -> Bitmap?,
     refreshBitmap: suspend (String, Int) -> Bitmap?,
     modifier: Modifier,
@@ -290,6 +303,7 @@ private fun MonitorSnapshot(
             cameraName = camera.name,
             cachedBitmap = { cachedBitmap(camera.name) },
             refreshBitmap = { refreshBitmap(camera.name, 720) },
+            contentScale = if (stretched) ContentScale.FillBounds else ContentScale.Fit,
             modifier = Modifier.fillMaxSize(),
         )
         Text(
@@ -333,6 +347,7 @@ private fun MonitorControl(
 private fun MonitorLiveVideo(
     requestId: String,
     videoOnly: Boolean,
+    stretched: Boolean,
     onReady: () -> Unit,
     onFailed: () -> Unit,
 ) {
@@ -354,10 +369,11 @@ private fun MonitorLiveVideo(
                 keepScreenOn = false
                 isFocusable = false
                 descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
-                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                resizeMode = videoResizeMode(stretched)
                 playerView = this
             }
         },
+        update = { it.resizeMode = videoResizeMode(stretched) },
         modifier = Modifier.fillMaxSize(),
     )
 

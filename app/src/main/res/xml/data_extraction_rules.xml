@@ -2,11 +2,17 @@
 <data-extraction-rules>
     <cloud-backup disableIfNoEncryptionCapabilities="true">
         <exclude domain="sharedpref" path="opah_secure_session.xml" />
+        <exclude domain="sharedpref" path="opah_home_assistant.xml" />
+        <exclude domain="sharedpref" path="opah_guided_setup.xml" />
+        <exclude domain="sharedpref" path="opah_notification_pause.xml" />
         <exclude domain="file" path="datastore/" />
         <exclude domain="database" path="." />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="opah_secure_session.xml" />
+        <exclude domain="sharedpref" path="opah_home_assistant.xml" />
+        <exclude domain="sharedpref" path="opah_guided_setup.xml" />
+        <exclude domain="sharedpref" path="opah_notification_pause.xml" />
         <exclude domain="file" path="datastore/" />
         <exclude domain="database" path="." />
     </device-transfer>

@@ -52,6 +52,15 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
+        <service android:name=".homeassistant.android.HomeAssistantForegroundService"
+            android:exported="false" android:foregroundServiceType="connectedDevice" />
+        <receiver android:name=".homeassistant.android.HomeAssistantBootReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <!-- Export is required so Android can deliver its protected boot broadcasts. -->
         <receiver
             android:name=".notifications.android.TvAlertBootReceiver"
@@ -67,6 +76,9 @@
         <!-- PiP params set auto-enter and the live PlayerView source rect through
              MainActivity's request callback; lint cannot follow that indirection. -->
 
+        <activity android:name=".homeassistant.android.HomeAssistantActionActivity" android:exported="false"
+            android:taskAffinity="" android:excludeFromRecents="true" android:noHistory="true" />
+        <receiver android:name=".homeassistant.android.HomeAssistantNoticeDismissReceiver" android:exported="false" />
         <activity
             android:name=".MainActivity"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize|uiMode"

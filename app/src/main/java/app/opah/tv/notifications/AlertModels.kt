@@ -54,6 +54,7 @@ enum class AlertDecisionReason {
     OPENED,
     DUPLICATE,
     ENDED_OUTSIDE_GRACE,
+    SHARED_PAUSE,
 }
 
 data class AlertDecision(

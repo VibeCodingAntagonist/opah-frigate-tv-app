@@ -260,7 +260,9 @@ internal fun Phase0UiState.projectForPrivacy(
                     .takeUnless { privacy.guestModeActive },
             ),
             results = projectedSearchResults,
-        ),
+        ).afterSearchScopeChanged(discovery.cameras.mapNotNullTo(mutableSetOf()) { camera ->
+            camera.name.takeIf { grant(PrivacySurface.SEARCH, PrivacyTarget.Camera(it)) != null }
+        }),
         exports = exports.copy(
             items = visibleExports,
             incidents = visibleIncidents,

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="tv_alert_interaction_hint">Down for actions · Back to close</string>
     <string name="app_name">Opah</string>
     <string name="native_frigate_connection">Frigate connection</string>
     <string name="native_connection_privacy_help">Enter the address used to open Frigate • server details stay on this TV</string>
@@ -46,4 +47,15 @@
     <string name="native_high_contrast_state">High contrast   %1$s</string>
     <string name="native_extra_rounding_state">Extra rounding   %1$s</string>
     <string name="native_reduce_transparency_state">Reduce transparency   %1$s</string>
+    <string name="ha_action_title">Home Assistant request</string>
+    <string name="ha_action_selected">Selected request: %1$s</string>
+    <string name="ha_action_pin">Enter the Opah PIN to authorize this request</string>
+    <string name="ha_action_confirm">Home Assistant decides what this button does</string>
+    <string name="ha_action_pin_empty">○ ○ ○ ○</string>
+    <string name="ha_action_clear">Clear</string>
+    <string name="ha_action_delete">Delete</string>
+    <string name="ha_action_send">Send request</string>
+    <string name="ha_action_cancel">Cancel</string>
+    <string name="ha_action_pin_failed">PIN could not be verified — check the PIN or try again later</string>
+    <string name="ha_action_sending">Sending request</string>
 </resources>

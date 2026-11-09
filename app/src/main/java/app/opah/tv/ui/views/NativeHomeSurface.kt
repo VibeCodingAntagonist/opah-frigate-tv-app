@@ -82,13 +82,10 @@ internal class NativeHomeSurface(
     private val cachedBitmap: (String) -> Bitmap?,
     private val refreshBitmap: suspend (String, Int) -> Bitmap?,
     private val onPrimary: (NativeHomeTile) -> Unit,
-    private val onSecondary: (NativeHomeTile) -> Unit,
     private val onOptions: (NativeHomeTile) -> Unit,
     private val imageLoadedAtMillis: (String) -> Long? = { null },
 ) : LinearLayout(activity) {
     private val subtitleView = text(14f, secondary = true)
-    private val selectedTitle = text(17f, bold = true)
-    private val selectedDetail = text(13f, secondary = true)
     private val filterButtons = linkedMapOf<String, TextView>()
     private val quickActionIcons = mutableMapOf<String, Int>()
     private val quickItems = LinearLayout(activity).apply {
@@ -108,13 +105,6 @@ internal class NativeHomeSurface(
         clipToPadding = false
         addView(quickItems)
     }
-    private val primaryButton = button("Open", "home:primary") { selectedTile?.let(onPrimary) }
-    private val secondaryButton = button("Favorite", "home:secondary") { selectedTile?.let(onSecondary) }
-    private val optionsButton = button("Options", "home:options") { selectedTile?.let(onOptions) }
-    private val retryButton = button("Retry preview", "home:retry-preview") {
-        tilePreviews.values.firstOrNull { it.tile.key == selectedTile?.key }?.let(::startTilePreview)
-    }.apply { visibility = View.GONE }
-    private val contextBar = LinearLayout(activity)
     private var restoringVisibleTileFocus: View? = null
     private val gridManager = object : GridLayoutManager(activity, GRID_COLUMNS) {
         override fun onRequestChildFocus(
@@ -145,6 +135,7 @@ internal class NativeHomeSurface(
     private val tileAdapter = HomeTileAdapter(
         onFocused = ::selectTile,
         onActivated = { tile -> selectTile(tile); onPrimary(tile) },
+        onOptions = { tile -> selectTile(tile); onOptions(tile) },
         onImage = ::loadTileImage,
         onRecycled = ::releaseTileImage,
         onAttached = { image -> tilePreviews[image]?.let(::startTilePreview) },
@@ -173,6 +164,7 @@ internal class NativeHomeSurface(
                     orientation = VERTICAL
                     addView(text(26f, bold = true).apply { text = "Cameras" })
                     addView(subtitleView)
+                    addView(text(12f, secondary = true).apply { text = "Hold OK for options" })
                 }, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
                 addView(LinearLayout(activity).apply {
                     gravity = Gravity.CENTER_VERTICAL
@@ -193,29 +185,14 @@ internal class NativeHomeSurface(
         })
         tilesView.adapter = tileAdapter
         addView(FrameLayout(activity).apply {
-            clipChildren = false
+            tag = "home:grid-viewport"
+            // Allow focus growth within the grid's padding, while keeping scrolling tiles
+            // inside this viewport so they cannot cover the fixed header and quick actions.
+            clipChildren = true
+            clipToPadding = true
             addView(tilesView, FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
             addView(emptyView, FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         }, LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))
-        contextBar.apply {
-            orientation = HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = activity.nativeGlassPanelBackground(strong = true)
-            minimumHeight = activity.dp(57)
-            setPadding(activity.dp(14), activity.dp(7), activity.dp(8), activity.dp(7))
-            addView(LinearLayout(activity).apply {
-                orientation = VERTICAL
-                addView(selectedTitle)
-                addView(selectedDetail)
-            }, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
-            addView(retryButton)
-            addView(primaryButton)
-            addView(secondaryButton)
-            addView(optionsButton)
-        }
-        selectedTitle.maxLines = 2
-        selectedDetail.maxLines = 2
-        addView(contextBar, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = activity.dp(4) })
         update(initialState)
     }
 
@@ -246,6 +223,11 @@ internal class NativeHomeSurface(
         submitTiles()
     }
 
+    fun refreshPreview(tileKey: String) {
+        if (tileAdapter.currentList.none { it.key == tileKey }) return
+        tilePreviews.values.firstOrNull { it.tile.key == tileKey }?.let(::startTilePreview)
+    }
+
     fun close() {
         closed = true
         tilePreviews.values.forEach { it.job?.cancel() }
@@ -257,10 +239,6 @@ internal class NativeHomeSurface(
             val focused = findFocus()
             if (event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN &&
                 (filterButtons.values.any { it === focused } || quickItems.containsDescendant(focused))) {
-                focusTile(selectedTile?.key)
-                return true
-            }
-            if (event.keyCode == KeyEvent.KEYCODE_DPAD_UP && contextBar.containsDescendant(focused)) {
                 focusTile(selectedTile?.key)
                 return true
             }
@@ -296,7 +274,6 @@ internal class NativeHomeSurface(
                 ?: visible.getOrNull(oldIndex.coerceAtMost(visible.lastIndex))
             selectedTile = next
             if (next != null) selectTile(next)
-            contextBar.visibility = if (next == null) View.INVISIBLE else View.VISIBLE
             emptyView.visibility = if (visible.isEmpty()) View.VISIBLE else View.GONE
             emptyView.text = when (filterKey) {
                 "favorites" -> "Favorite a camera or view to find it here"
@@ -370,18 +347,6 @@ internal class NativeHomeSurface(
 
     private fun selectTile(tile: NativeHomeTile) {
         selectedTile = tile
-        selectedTitle.text = tile.title
-        selectedDetail.text = tile.subtitle
-        retryButton.visibility = View.GONE
-        tilePreviews.values.firstOrNull { it.tile.key == tile.key }?.let(::updatePreviewLabel)
-        primaryButton.text = when (tile.kind) {
-            NativeHomeTileKind.CAMERA, NativeHomeTileKind.BIRDSEYE -> "Play"
-            NativeHomeTileKind.CAMERA_GROUP, NativeHomeTileKind.SAVED_VIEW -> "Open view"
-        }
-        val supportsMonitor = tile.kind == NativeHomeTileKind.CAMERA_GROUP || tile.kind == NativeHomeTileKind.SAVED_VIEW
-        secondaryButton.visibility = if (supportsMonitor || tile.kind == NativeHomeTileKind.CAMERA) View.VISIBLE else View.GONE
-        secondaryButton.text = if (supportsMonitor) "Monitor" else if (tile.favorite) "Unfavorite" else "Favorite"
-        optionsButton.visibility = if (tile.kind == NativeHomeTileKind.BIRDSEYE) View.GONE else View.VISIBLE
     }
 
     private fun updateQuickActions(actions: List<NativeHomeQuickAction>) {
@@ -496,12 +461,6 @@ internal class NativeHomeSurface(
         if (binding.label.text.toString() != label) binding.label.text = label
         (binding.image.parent as? View)?.contentDescription =
             "${binding.tile.title}, $label${if (binding.tile.favorite) ", favorite" else ""}"
-        if (selectedTile?.key == binding.tile.key) {
-            if (selectedDetail.text.toString() != label) selectedDetail.text = label
-            val hadRetryFocus = retryButton.hasFocus()
-            retryButton.visibility = if (binding.unavailable) View.VISIBLE else View.GONE
-            if (!binding.unavailable && hadRetryFocus) primaryButton.requestFocus()
-        }
     }
 
     private fun releaseTileImage(target: ImageView) {
@@ -567,6 +526,7 @@ internal class NativeHomeSurface(
     private class HomeTileAdapter(
         private val onFocused: (NativeHomeTile) -> Unit,
         private val onActivated: (NativeHomeTile) -> Unit,
+        private val onOptions: (NativeHomeTile) -> Unit,
         private val onImage: (NativeHomeTile, ImageView, TextView) -> Unit,
         private val onRecycled: (ImageView) -> Unit,
         private val onAttached: (ImageView) -> Unit,
@@ -579,7 +539,7 @@ internal class NativeHomeSurface(
             LayoutInflater.from(parent.context).inflate(R.layout.native_home_tile, parent, false),
         )
         override fun onBindViewHolder(holder: TileHolder, position: Int) {
-            holder.bind(getItem(position), onFocused, onActivated, onImage, revealOnFocus)
+            holder.bind(getItem(position), onFocused, onActivated, onOptions, onImage, revealOnFocus)
         }
         override fun onViewAttachedToWindow(holder: TileHolder) {
             super.onViewAttachedToWindow(holder)
@@ -613,6 +573,7 @@ internal class NativeHomeSurface(
             tile: NativeHomeTile,
             onFocused: (NativeHomeTile) -> Unit,
             onActivated: (NativeHomeTile) -> Unit,
+            onOptions: (NativeHomeTile) -> Unit,
             onImage: (NativeHomeTile, ImageView, TextView) -> Unit,
             revealOnFocus: (View) -> Boolean,
         ) {
@@ -627,6 +588,7 @@ internal class NativeHomeSurface(
             subtitle.text = tile.subtitle
             onImage(tile, image, subtitle)
             itemView.setOnClickListener { onActivated(tile) }
+            itemView.setOnLongClickListener { onOptions(tile); true }
             itemView.onFocusChangeListener = View.OnFocusChangeListener { focusedView, focused ->
                 focusedView.applyNativeFocusMotion(focused, scale = 1.025f)
                 if (focused) {

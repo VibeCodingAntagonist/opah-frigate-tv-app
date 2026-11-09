@@ -16,10 +16,11 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import app.opah.tv.BuildConfig
 import app.opah.tv.OpahApplication
@@ -33,6 +34,7 @@ import app.opah.tv.ui.CameraGroupViewUiState
 import app.opah.tv.ui.DOCUMENTATION_URI_PREFIX
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
@@ -44,6 +46,7 @@ internal class NativeCameraGroupSurface(
     private val activity: ComponentActivity,
     private val state: CameraGroupViewUiState,
     private val preferRtpTcp: Boolean,
+    private val stretchedCameraNames: Set<String>,
     private val cachedBitmap: (String) -> Bitmap?,
     private val refreshBitmap: suspend (String, Int) -> Bitmap?,
     private val pictureInPictureAvailable: Boolean,
@@ -213,17 +216,18 @@ internal class NativeCameraGroupSurface(
 
     private fun tile(index: Int): View {
         val stream = state.streams[index]
+        val stretched = stream.camera.name in stretchedCameraNames
         return FrameLayout(activity).apply {
             setBackgroundColor(Color.BLACK)
             val snapshot = ImageView(activity).apply {
-                scaleType = ImageView.ScaleType.CENTER_CROP
+                scaleType = if (stretched) ImageView.ScaleType.FIT_XY else ImageView.ScaleType.FIT_CENTER
                 setBackgroundColor(NativeTheme.palette.panel)
                 cachedBitmap(stream.camera.name)?.let(::setImageBitmap)
             }
             addView(snapshot, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
             val playerView = PlayerView(activity).apply {
                 useController = false
-                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                resizeMode = nativePlaybackResizeMode(stretched)
                 isFocusable = false
                 visibility = View.INVISIBLE
                 setBackgroundColor(Color.TRANSPARENT)
@@ -253,6 +257,7 @@ internal class NativeCameraGroupSurface(
             var attempt = 0
             var failed = false
             var rendered = false
+            var needsStartStagger = true
             lateinit var startStream: () -> Unit
             val retry = controlButton("Retry ${stream.camera.displayName}", R.drawable.ic_retry) { startStream() }.apply {
                 tag = "group:retry:${stream.camera.name}"
@@ -279,7 +284,7 @@ internal class NativeCameraGroupSurface(
                 )
             }
             startStream = {
-                if (!closed && (attempt == 0 || failed)) {
+                if (!closed && activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) && (attempt == 0 || failed)) {
                     attempt += 1
                     val thisAttempt = attempt
                     startJob?.cancel()
@@ -298,8 +303,10 @@ internal class NativeCameraGroupSurface(
                     retry.isClickable = false
                     retry.alpha = 0.6f
                     jobs.removeAll { it.isCompleted }
+                    val startDelayMillis = if (needsStartStagger) index * PLAYER_START_STAGGER_MILLIS else 0
+                    needsStartStagger = false
                     startJob = activity.lifecycleScope.launch {
-                        delay(if (thisAttempt == 1) index * PLAYER_START_STAGGER_MILLIS else 0)
+                        delay(startDelayMillis)
                         var created: LivePlayer? = null
                         try {
                             created = livePlayerFactory.create(activity, false)
@@ -373,7 +380,30 @@ internal class NativeCameraGroupSurface(
                     imageLoadedAtMillis(stream.camera.name), snapshot.drawable != null, unavailable = snapshot.drawable == null,
                 )
             } else {
-                startStream()
+                activity.lifecycleScope.launch {
+                    activity.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                        try {
+                            startStream()
+                            awaitCancellation()
+                        } finally {
+                            attempt += 1
+                            startJob?.cancel()
+                            snapshotJob?.cancel()
+                            playerView.player = null
+                            activePlayer?.let { old -> if (players.remove(old)) old.release() }
+                            activePlayer = null
+                            failed = true
+                            rendered = false
+                            needsStartStagger = true
+                            readyCameraNames -= stream.camera.name
+                            refreshPictureInPictureAvailability()
+                            playerView.visibility = View.INVISIBLE
+                            playbackStatus.text = "Connecting · Preview"
+                            playbackStatus.visibility = View.VISIBLE
+                            retry.visibility = View.GONE
+                        }
+                    }
+                }.also(jobs::add)
             }
         }
     }

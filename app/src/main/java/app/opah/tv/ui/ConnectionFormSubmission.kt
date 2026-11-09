@@ -36,4 +36,10 @@ internal class ConnectionFormSubmission(
         request?.cancel()
         request = null
     }
+    fun cancelPending() {
+        if (closed) return
+        generation++
+        request?.cancel(); request = null
+        if (busy) { busy = false; onStatus(false, "Connection attempt stopped") }
+    }
 }

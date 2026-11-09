@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import app.opah.tv.data.model.ConnectionProfile
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 
 private val Context.connectionDataStore by preferencesDataStore(name = "connection_profile")
 
@@ -17,6 +18,7 @@ interface ConnectionProfileStore {
 }
 
 class ProfileRepository(private val context: Context) : ConnectionProfileStore {
+    internal val hasSavedProfile = context.connectionDataStore.data.map { it[API_URL] != null && it[USERNAME] != null }
     override suspend fun load(): ConnectionProfile? {
         val preferences = context.connectionDataStore.data.first()
         val url = preferences[API_URL] ?: return null

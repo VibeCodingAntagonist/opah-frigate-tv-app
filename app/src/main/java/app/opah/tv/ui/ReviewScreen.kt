@@ -148,7 +148,8 @@ internal fun ReviewScreen(
             savingClip = review.savingClipItemId == selected.id,
             savedClip = selected.id in review.savedClipItemIds,
             savedClipMessage = review.savedClipMessage.takeIf { review.savedClipItemId == selected.id },
-            onFindSimilar = { onFindSimilar(selected) },
+            onFindSimilar = if (state.snapshot?.capabilities?.supports(FrigateFeature.SEMANTIC_SEARCH) == true &&
+                selected.activitySimilaritySeed() != null) ({ onFindSimilar(selected) }) else null,
             queuePosition = if (review.queueActive) {
                 "${review.queueIndex + 1} of ${review.queueItemIds.size}"
             } else {
@@ -583,7 +584,7 @@ private fun ReviewDetail(
     savingClip: Boolean,
     savedClip: Boolean,
     savedClipMessage: String?,
-    onFindSimilar: () -> Unit,
+    onFindSimilar: (() -> Unit)?,
     queuePosition: String?,
     onPrevious: (() -> Unit)?,
     onNext: (() -> Unit)?,
@@ -724,7 +725,7 @@ private fun ReviewDetailActionBar(
     onPlay: () -> Unit,
     onNext: (() -> Unit)?,
     onSetReviewed: (Boolean) -> Unit,
-    onFindSimilar: () -> Unit,
+    onFindSimilar: (() -> Unit)?,
     onSaveClip: () -> Unit,
     onSaveAllAngles: () -> Unit,
 ) {
@@ -776,12 +777,12 @@ private fun ReviewDetailActionBar(
                 },
             )
         }
-        if (reviewItem.linkedEvents.isNotEmpty()) {
+        onFindSimilar?.let { findSimilar ->
             item {
                 SecondaryAction(
                     focusKey = "activity:detail:similar",
                     label = "Find similar",
-                    onClick = onFindSimilar,
+                    onClick = findSimilar,
                 )
             }
         }

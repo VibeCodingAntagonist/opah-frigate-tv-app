@@ -9,6 +9,9 @@ import app.opah.tv.data.security.SavedCredentialStore
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.CancellationException
 
 /** Owns the complete authentication lifecycle and persistence boundaries. */
 class FrigateSessionManager(
@@ -36,8 +39,18 @@ class FrigateSessionManager(
         profile: ConnectionProfile,
         password: String,
         rememberCredential: Boolean = true,
+        canPersist: () -> Boolean = { true },
     ): FrigateUserProfile {
-        val user = gateway.login(profile, password)
+        val user = try {
+            gateway.login(profile, password).also { currentCoroutineContext().ensureActive() }
+        } catch (cancelled: CancellationException) {
+            cookieStore.clear()
+            throw cancelled
+        }
+        if (!canPersist()) {
+            cookieStore.clear()
+            throw CancellationException("Connection setup is no longer authorized")
+        }
         profileStore.save(profile)
         withContext(ioDispatcher) {
             if (rememberCredential && !profile.usesUnauthenticatedFrigatePort) {

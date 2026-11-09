@@ -1,27 +1,45 @@
-# Opah 0.6.0 interface gallery
+# Opah 0.7.0 interface gallery
 
 Every image below is a 1920×1080 Android TV screenshot made with fictional
 example data and generated camera scenes. No real camera, account, server, or
 private address appears in the gallery.
 
-The redesigned interface uses compact glass controls, a camera grid, and
-separate layouts for browsing recordings and changing settings.
+Explore camera viewing, activity, guided setup, and optional TV notifications.
+The interface uses compact controls and clear remote-focus outlines.
 
 ## Start and connection states
 
-| Connecting | Connection setup |
+| Connecting | Saved Frigate connection |
 | --- | --- |
-| <img src="screenshots/01-connecting.png" alt="Opah connecting screen" width="720"> | <img src="screenshots/02-connection-setup.png" alt="Opah connection setup screen with a fictional saved server" width="720"> |
+| <img src="screenshots/01-connecting.png" alt="Opah connecting screen" width="720"> | <img src="screenshots/02-connection-setup.png" alt="Opah Frigate connection settings with a fictional saved server" width="720"> |
 
 | Recoverable connection failure |
 | --- |
-| <img src="screenshots/03-connection-recovery.png" alt="Opah recoverable connection failure screen" width="720"> |
+| <img src="screenshots/03-connection-recovery.png" alt="Opah offers to reconnect to a fictional unavailable server" width="720"> |
 
 ## Cameras and navigation
 
 | Cameras | Expanded navigation |
 | --- | --- |
-| <img src="screenshots/04-home.png" alt="Opah Cameras grid with four fictional camera previews" width="720"> | <img src="screenshots/05-navigation-expanded.png" alt="Opah navigation with Cameras, Activity, Clips, and Settings" width="720"> |
+| <img src="screenshots/04-home.png" alt="Opah Cameras grid with four fictional camera previews" width="720"> | <img src="screenshots/05-navigation-expanded.png" alt="Opah navigation with Cameras, Activity, Clips, Connections, and Settings" width="720"> |
+
+## Connections and guided setup
+
+| Connections | Home Assistant sign-in |
+| --- | --- |
+| <img src="screenshots/27-connections.png" alt="Opah Connections page for Frigate, Home Assistant, setup, and notifications" width="720"> | <img src="screenshots/31-home-assistant-setup.png" alt="Home Assistant setup with a fictional server and TV name" width="720"> |
+
+| Choose your services | Choose privacy |
+| --- | --- |
+| <img src="screenshots/28-guided-setup.png" alt="Guided setup offers Frigate, Home Assistant, or both" width="720"> | <img src="screenshots/29-setup-privacy.png" alt="Guided setup reviews message details, preview privacy, and PIN protection" width="720"> |
+
+| Check setup | Home Assistant choices |
+| --- | --- |
+| <img src="screenshots/30-connection-checks.png" alt="Connection checks keep sign-in, notification permissions, previews, and delivery results separate" width="720"> | <img src="screenshots/32-home-assistant-options.png" alt="Separate Home Assistant notification, message-detail, picture, and automation-button choices" width="720"> |
+
+| Pause both notification sources |
+| --- |
+| <img src="screenshots/33-notification-pause.png" alt="Shared notification pause with 15-minute, one-hour, and Resume controls" width="720"> |
 
 ## Cameras and live views
 
@@ -47,6 +65,10 @@ separate layouts for browsing recordings and changing settings.
 | --- | --- |
 | <img src="screenshots/19-activity-history.png" alt="Opah History with camera, date and time choices and example recording periods" width="720"> | <img src="screenshots/20-activity-search.png" alt="Opah activity search with an example vehicle result" width="720"> |
 
+| Find similar activity |
+| --- |
+| <img src="screenshots/37-similar-activity.png" alt="Visual activity search showing Similar to Person and fictional matching activity" width="720"> |
+
 ## Clips
 
 | Saved recordings | Incidents |
@@ -68,6 +90,20 @@ separate layouts for browsing recordings and changing settings.
 | Performance | Storage |
 | --- | --- |
 | <img src="screenshots/12-information-performance.png" alt="Opah Server performance tab with fictional Frigate values" width="720"> | <img src="screenshots/13-information-storage.png" alt="Opah Server storage dashboard with fictional usage values" width="720"> |
+
+## Optional TV notifications
+
+Passive Frigate alerts remain the default. These examples show the additional
+controls available after enabling interactive alerts or Home Assistant
+automation buttons. Home Assistant button requests require PIN authorization.
+
+| Interactive Frigate alert | Home Assistant message |
+| --- | --- |
+| <img src="screenshots/34-interactive-alert.png" alt="Fictional person alert with recording, live camera, and snooze controls" width="720"> | <img src="screenshots/35-home-assistant-message.png" alt="Fictional laundry notification with optional response buttons over a TV backdrop" width="720"> |
+
+| Recording preview |
+| --- |
+| <img src="screenshots/36-recording-preview.png" alt="A generated camera scene playing in the optional muted recording preview with playback controls" width="720"> |
 
 ## Settings and updates
 

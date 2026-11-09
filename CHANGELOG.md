@@ -2,6 +2,45 @@
 
 This page lists the user-visible changes in each Opah release.
 
+## 0.7.0
+
+- Open a camera with **OK** and hold **OK** for its options. Camera headings
+  stay visible as you scroll through the grid.
+- Choose **Find similar activity** to start a visual search immediately, with
+  a clear starting activity that stays selected when you refresh or filter.
+
+- Pause Frigate and Home Assistant notifications together for 15 minutes or
+  1 hour, with an early Resume control and no replay of paused activity.
+
+- Follow guided setup for Frigate, Home Assistant, or both, with separate
+  notification choices, privacy review, and connection checks. Resume unfinished
+  steps or check existing connections without signing in again.
+
+- Receive optional Home Assistant pictures and up to three automation buttons,
+  with separate opt-ins, PIN protection, and temporary media and actions.
+
+- Choose optional interactive Frigate pop-ups to watch a recording, open a live
+  camera, or snooze that camera's alerts using the TV remote. Passive pop-ups
+  remain the default, and existing privacy protections still apply.
+
+- Enable recording previews in interactive alerts to watch an available
+  recording in the pop-up. Previews start muted and let you pause, turn sound
+  on, or open the recording in Opah.
+
+- Open **Connections** from the side menu to set up Frigate and Home Assistant
+  in one place, with the same PIN protection as Settings.
+- Register this TV with Home Assistant and show text messages from your home
+  automations alongside Frigate alerts, including while another TV app is open.
+- Choose whether Home Assistant messages show their details on a shared TV.
+  Notifications reconnect when the TV's network returns.
+
+- Stop camera video and audio when leaving Opah for the Home screen, freeing
+  playback resources for other apps.
+- Show the complete camera picture by default in Monitor and camera groups,
+  without cropping the edges.
+- Apply each camera's existing **Fit video to screen** or **Stretch video to
+  screen** choice consistently to previews and live video.
+
 ## 0.6.0
 
 ### A complete visual redesign

@@ -10,6 +10,7 @@ internal enum class NativeDestination(
     HOME("Cameras", R.drawable.ic_videocam),
     ACTIVITY("Activity", R.drawable.ic_review),
     CLIPS("Clips", R.drawable.ic_saved),
+    CONNECTIONS("Connections", R.drawable.ic_connections),
     SETTINGS("Settings", R.drawable.ic_settings),
 }
 
@@ -19,15 +20,22 @@ internal enum class NativeClipsPage { RECORDINGS, INCIDENTS }
 
 internal enum class NativeServerPage { CONNECTION, PERFORMANCE, STORAGE }
 
+internal enum class NativeConnectionPage(val label: String) {
+    FRIGATE("Frigate"), HOME_ASSISTANT("Home Assistant"), SETUP("Setup & checks"), NOTIFICATIONS("Notifications"),
+}
+
 internal data class NativeRoute(
     val destination: NativeDestination = NativeDestination.HOME,
     val settingsPage: SettingsPage = SettingsPage.MAIN,
+    val connectionPage: NativeConnectionPage = NativeConnectionPage.FRIGATE,
 ) {
     init {
         require(destination == NativeDestination.SETTINGS || settingsPage == SettingsPage.MAIN)
+        require(destination == NativeDestination.CONNECTIONS || connectionPage == NativeConnectionPage.FRIGATE)
     }
 
     val focusMemoryKey: String = when {
+        destination == NativeDestination.CONNECTIONS -> "CONNECTIONS:${connectionPage.name}"
         destination != NativeDestination.SETTINGS -> destination.name
         else -> "SETTINGS:${settingsPage.name}"
     }

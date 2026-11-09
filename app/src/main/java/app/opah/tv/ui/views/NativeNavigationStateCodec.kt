@@ -226,6 +226,7 @@ internal object NativeNavigationStateCodec {
         val value = location.canonical()
         putString("destination", value.route.destination.name)
         putString("settings", value.route.settingsPage.name)
+        putString("connection", value.route.connectionPage.name)
         putString("activity", value.activityPage.name)
         putString("clips", value.clipsPage.name)
         putString("server", value.serverPage.name)
@@ -245,7 +246,9 @@ internal object NativeNavigationStateCodec {
             else -> enumValue<SettingsPage>(value.id("settings")) ?: SettingsPage.MAIN
         } else SettingsPage.MAIN
         return NativeLocation(
-            route = NativeRoute(destination, settings),
+            route = NativeRoute(destination, settings,
+                if (destination == NativeDestination.CONNECTIONS) enumValue<NativeConnectionPage>(value.id("connection")) ?: NativeConnectionPage.FRIGATE
+                else NativeConnectionPage.FRIGATE),
             activityPage = enumValue<NativeActivityPage>(value.id("activity")) ?: NativeActivityPage.NEW,
             clipsPage = enumValue<NativeClipsPage>(value.id("clips")) ?: NativeClipsPage.RECORDINGS,
             serverPage = enumValue<NativeServerPage>(value.id("server")) ?: NativeServerPage.PERFORMANCE,

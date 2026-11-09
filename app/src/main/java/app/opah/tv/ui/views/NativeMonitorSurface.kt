@@ -19,7 +19,6 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import app.opah.tv.OpahApplication
 import app.opah.tv.R
@@ -31,6 +30,7 @@ import app.opah.tv.playback.compatibility.PlaybackCompatibilityState
 import app.opah.tv.playback.compatibility.PlaybackResult
 import app.opah.tv.playback.media3.PlayerViewMedia3VideoOutputTarget
 import app.opah.tv.playback.media3.SingleLivePlaybackRequestId
+import app.opah.tv.playback.media3.SingleLivePlaybackSession
 import app.opah.tv.ui.MonitorModeUiState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -48,6 +48,7 @@ import kotlinx.coroutines.withContext
 internal class NativeMonitorSurface(
     private val activity: ComponentActivity,
     initialState: MonitorModeUiState,
+    initialStretchedCameraNames: Set<String>,
     private val cachedBitmap: (String) -> Bitmap?,
     private val refreshBitmap: suspend (String, Int) -> Bitmap?,
     private val onPreset: (MonitorPreset) -> Unit,
@@ -59,8 +60,9 @@ internal class NativeMonitorSurface(
     private val onExitMinutes: (Int?) -> Unit,
     private val onBack: () -> Unit,
     private val imageLoadedAtMillis: (String) -> Long? = { null },
+    private val openLiveSession: suspend (SingleLivePlaybackRequestId, PlayerViewMedia3VideoOutputTarget, Boolean) -> SingleLivePlaybackSession =
+        { id, output, videoOnly -> (activity.application as OpahApplication).container.singleLivePlaybackCoordinator.open(id, output, videoOnly) },
 ) : FrameLayout(activity) {
-    private val application = activity.application as OpahApplication
     private val visualHost = FrameLayout(activity)
     private val title = TextView(activity)
     private val status = TextView(activity)
@@ -75,6 +77,7 @@ internal class NativeMonitorSurface(
     private val awakeButton: TextView
     private val exitButton: TextView
     private var state = initialState
+    private var stretchedCameraNames = initialStretchedCameraNames
     private var visualKey: String? = null
     private var visualJob: Job? = null
     private var chromeHideJob: Job? = null
@@ -153,15 +156,16 @@ internal class NativeMonitorSurface(
                 bottomMargin = activity.dp(24)
             },
         )
-        update(initialState)
+        update(initialState, initialStretchedCameraNames)
         controls.post {
             presetButtons[state.preset]?.requestFocus()
             scheduleChromeHide()
         }
     }
 
-    fun update(updated: MonitorModeUiState) {
+    fun update(updated: MonitorModeUiState, updatedStretchedCameraNames: Set<String>) {
         state = updated
+        stretchedCameraNames = updatedStretchedCameraNames
         keepScreenOn = updated.keepScreenAwake
         title.text = updated.title
         status.text = monitorStatus(updated)
@@ -187,14 +191,15 @@ internal class NativeMonitorSurface(
         val patrol = updated.arbitration.patrolCameraId
             ?.let { id -> updated.cameras.firstOrNull { it.name == id } }
         val visible = updated.cameras.filter { it.name in updated.visibleCameraIds }
+        val stretchSuffix = stretchedCameraNames.sorted().joinToString(",")
         val nextVisualKey = when {
             promoted != null &&
                 updated.arbitration.promotion.presentation == MonitorPresentationKind.LIVE &&
                 updated.liveCompatibilityRequestId != null ->
-                "live:${updated.liveCompatibilityRequestId}:${updated.audioEnabled}"
-            promoted != null -> "snapshot:${promoted.name}"
-            patrol != null -> "snapshot:${patrol.name}"
-            else -> "grid:${visible.joinToString { it.name }}"
+                "live:${updated.liveCompatibilityRequestId}:${updated.audioEnabled}:$stretchSuffix"
+            promoted != null -> "snapshot:${promoted.name}:$stretchSuffix"
+            patrol != null -> "snapshot:${patrol.name}:$stretchSuffix"
+            else -> "grid:${visible.joinToString { it.name }}:$stretchSuffix"
         }
         if (nextVisualKey == visualKey) return
         val focusedTileKey = visualHost.findFocus()?.tag as? String
@@ -205,7 +210,11 @@ internal class NativeMonitorSurface(
         visualHost.removeAllViews()
         cameraLabels.clear()
         when {
-            nextVisualKey.startsWith("live:") -> showLive(requireNotNull(updated.liveCompatibilityRequestId), !updated.audioEnabled)
+            nextVisualKey.startsWith("live:") -> showLive(
+                requireNotNull(updated.liveCompatibilityRequestId),
+                !updated.audioEnabled,
+                requireNotNull(promoted).name in stretchedCameraNames,
+            )
             promoted != null -> showSnapshot(promoted)
             patrol != null -> showSnapshot(patrol)
             visible.isNotEmpty() -> showGrid(visible)
@@ -273,10 +282,10 @@ internal class NativeMonitorSurface(
         return super.dispatchKeyEvent(event)
     }
 
-    private fun showLive(requestId: String, videoOnly: Boolean) {
+    private fun showLive(requestId: String, videoOnly: Boolean, stretched: Boolean) {
         val playerView = PlayerView(activity).apply {
             useController = false
-            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+            resizeMode = nativePlaybackResizeMode(stretched)
             isFocusable = false
             setBackgroundColor(Color.BLACK)
         }
@@ -287,61 +296,65 @@ internal class NativeMonitorSurface(
             rightMargin = activity.dp(24)
         })
         visualJob = activity.lifecycleScope.launch {
-            val session = try {
-                application.container.singleLivePlaybackCoordinator.open(
-                    SingleLivePlaybackRequestId(requestId),
-                    PlayerViewMedia3VideoOutputTarget(
-                        playerView = playerView,
-                        onAttached = { player -> player.volume = if (videoOnly) 0f else 1f },
-                        onDetached = {},
-                    ),
-                    videoOnly = videoOnly,
-                )
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                playbackStatus.text = "Camera unavailable"
-                onPlaybackFailed()
-                return@launch
-            }
-            var readyReported = false
-            var failureReported = false
-            try {
-                session.snapshots.collect { snapshot ->
-                    when (val playback = snapshot.state) {
-                        is PlaybackCompatibilityState.Verified,
-                        is PlaybackCompatibilityState.UnpersistedLive,
-                        is PlaybackCompatibilityState.Persisting,
-                        -> {
-                            playbackStatus.visibility = View.GONE
-                            if (!readyReported) {
-                                readyReported = true
-                                onPlaybackReady()
-                            }
-                        }
-                        is PlaybackCompatibilityState.Recovering,
-                        is PlaybackCompatibilityState.Attempting,
-                        is PlaybackCompatibilityState.Releasing,
-                        -> {
-                            playbackStatus.text = if (readyReported) "Reconnecting" else "Connecting"
-                            playbackStatus.visibility = View.VISIBLE
-                        }
-                        is PlaybackCompatibilityState.Finished -> if (
-                            playback.result !is PlaybackResult.VerifiedLive &&
-                            playback.result !is PlaybackResult.UnpersistedLive &&
-                            playback.result !is PlaybackResult.Cancelled &&
-                            !failureReported
-                        ) {
-                            failureReported = true
-                            playbackStatus.text = "Camera unavailable"
-                            playbackStatus.visibility = View.VISIBLE
-                            onPlaybackFailed()
-                        }
-                        else -> Unit
-                    }
+            activity.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                playbackStatus.text = "Connecting"
+                playbackStatus.visibility = View.VISIBLE
+                val session = try {
+                    openLiveSession(
+                        SingleLivePlaybackRequestId(requestId),
+                        PlayerViewMedia3VideoOutputTarget(
+                            playerView = playerView,
+                            onAttached = { player -> player.volume = if (videoOnly) 0f else 1f },
+                            onDetached = {},
+                        ),
+                        videoOnly,
+                    )
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    playbackStatus.text = "Camera unavailable"
+                    onPlaybackFailed()
+                    return@repeatOnLifecycle
                 }
-            } finally {
-                withContext(NonCancellable) { session.close() }
+                var readyReported = false
+                var failureReported = false
+                try {
+                    session.snapshots.collect { snapshot ->
+                        when (val playback = snapshot.state) {
+                            is PlaybackCompatibilityState.Verified,
+                            is PlaybackCompatibilityState.UnpersistedLive,
+                            is PlaybackCompatibilityState.Persisting,
+                            -> {
+                                playbackStatus.visibility = View.GONE
+                                if (!readyReported) {
+                                    readyReported = true
+                                    onPlaybackReady()
+                                }
+                            }
+                            is PlaybackCompatibilityState.Recovering,
+                            is PlaybackCompatibilityState.Attempting,
+                            is PlaybackCompatibilityState.Releasing,
+                            -> {
+                                playbackStatus.text = if (readyReported) "Reconnecting" else "Connecting"
+                                playbackStatus.visibility = View.VISIBLE
+                            }
+                            is PlaybackCompatibilityState.Finished -> if (
+                                playback.result !is PlaybackResult.VerifiedLive &&
+                                playback.result !is PlaybackResult.UnpersistedLive &&
+                                playback.result !is PlaybackResult.Cancelled &&
+                                !failureReported
+                            ) {
+                                failureReported = true
+                                playbackStatus.text = "Camera unavailable"
+                                playbackStatus.visibility = View.VISIBLE
+                                onPlaybackFailed()
+                            }
+                            else -> Unit
+                        }
+                    }
+                } finally {
+                    withContext(NonCancellable) { session.close() }
+                }
             }
         }
     }
@@ -403,9 +416,10 @@ internal class NativeMonitorSurface(
 
     private fun addPreview(host: FrameLayout, camera: Camera, height: Int) {
         val cached = cachedBitmap(camera.name)
+        val stretched = camera.name in stretchedCameraNames
         val image = ImageView(activity).apply {
             tag = "monitor:image:${camera.name}"
-            scaleType = ImageView.ScaleType.CENTER_CROP
+            scaleType = if (stretched) ImageView.ScaleType.FIT_XY else ImageView.ScaleType.FIT_CENTER
             setBackgroundColor(NativeTheme.palette.panel)
             cached?.let(::setImageBitmap)
         }
@@ -427,6 +441,7 @@ internal class NativeMonitorSurface(
         host.addView(retry, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         val binding = MonitorPreviewBinding(camera, image, badge, retry, height, imageLoadedAtMillis(camera.name), cached != null)
         previewBindings[camera.name] = binding
+        updatePreviewStatus(binding)
         startPreview(binding)
     }
 
@@ -434,6 +449,12 @@ internal class NativeMonitorSurface(
         binding.job?.cancel()
         binding.job = activity.lifecycleScope.launch {
             activity.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                launch {
+                    while (isActive && !closed && previewBindings[binding.camera.name] === binding) {
+                        updatePreviewStatus(binding)
+                        delay(SNAPSHOT_REFRESH_MILLIS)
+                    }
+                }
                 while (isActive && !closed && previewBindings[binding.camera.name] === binding) {
                     val bitmap = try { refreshBitmap(binding.camera.name, binding.height) }
                     catch (cancelled: CancellationException) { throw cancelled }
@@ -445,7 +466,8 @@ internal class NativeMonitorSurface(
                         binding.hasImage = true
                         binding.loadedAtMillis = imageLoadedAtMillis(binding.camera.name) ?: System.currentTimeMillis()
                     }
-                    binding.badge.text = cameraPreviewStatus(binding.loadedAtMillis, binding.hasImage, bitmap == null)
+                    binding.unavailable = bitmap == null
+                    updatePreviewStatus(binding)
                     val hadRetryFocus = binding.retry.hasFocus()
                     binding.retry.visibility = if (bitmap == null) View.VISIBLE else View.GONE
                     if (hadRetryFocus && bitmap != null) {
@@ -456,6 +478,13 @@ internal class NativeMonitorSurface(
                 }
             }
         }
+    }
+
+    private fun updatePreviewStatus(binding: MonitorPreviewBinding) {
+        val nowMillis = System.currentTimeMillis()
+        binding.badge.text = cameraPreviewStatus(binding.loadedAtMillis, binding.hasImage, binding.unavailable, nowMillis)
+        val stale = binding.loadedAtMillis?.let { nowMillis - it >= PREVIEW_STALE_MILLIS } ?: true
+        binding.badge.visibility = if (chromeVisible || binding.unavailable || !binding.hasImage || stale) View.VISIBLE else View.GONE
     }
 
     private fun clearPreviewBindings() {
@@ -471,6 +500,7 @@ internal class NativeMonitorSurface(
         val height: Int,
         var loadedAtMillis: Long?,
         var hasImage: Boolean,
+        var unavailable: Boolean = false,
         var job: Job? = null,
     )
 
@@ -556,6 +586,7 @@ internal class NativeMonitorSurface(
         header.visibility = View.VISIBLE
         controlsScroller.visibility = View.VISIBLE
         cameraLabels.forEach { it.visibility = View.GONE }
+        previewBindings.values.forEach(::updatePreviewStatus)
         if (requestFocus || findFocus() == null || findFocus() === this) {
             val remembered = lastControlKey?.let { controls.findViewWithTag<View>(it) }
             if (remembered?.isEnabled == true) remembered.requestFocus()
@@ -570,6 +601,7 @@ internal class NativeMonitorSurface(
         header.visibility = View.GONE
         controlsScroller.visibility = View.GONE
         cameraLabels.forEach { it.visibility = View.VISIBLE }
+        previewBindings.values.forEach(::updatePreviewStatus)
         requestFocus()
     }
 
@@ -593,6 +625,7 @@ internal class NativeMonitorSurface(
         const val MONITOR_SNAPSHOT_HEIGHT = 720
         const val MONITOR_GRID_HEIGHT = 360
         const val SNAPSHOT_REFRESH_MILLIS = 5_000L
+        const val PREVIEW_STALE_MILLIS = 60_000L
         const val CHROME_HIDE_MILLIS = 5_000L
         val REVEAL_KEYS = setOf(
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,

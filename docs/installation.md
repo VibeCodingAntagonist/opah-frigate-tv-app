@@ -8,9 +8,8 @@ is an APK, which is simply an Android installation file.
 You need:
 
 - an Android TV or Google TV running Android 7.0 or newer;
-- a working Frigate server that the TV can reach;
-- a Frigate username and password for the recommended authenticated connection;
-  and
+- a Frigate server, Home Assistant server, or both that the TV can reach;
+- a Frigate username and password if you want to connect to Frigate; and
 - a way to send the downloaded APK to the TV, such as a USB drive or a trusted
   file-transfer app.
 
@@ -22,7 +21,7 @@ This link always downloads `opah-latest.apk` from the newest published release.
 You can also open the project's [GitHub Releases page](https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/releases),
 choose the newest release, and download the versioned file named like
 `opah-vX.Y.Z.apk`. The letters stand for the release version; for example,
-version 0.6.0 is named `opah-v0.6.0.apk`. Both APK names in that release contain
+version 0.7.0 is named `opah-v0.7.0.apk`. Both APK names in that release contain
 the same app.
 
 Do not download Opah from an unofficial mirror or APK website.
@@ -41,33 +40,46 @@ Do not download Opah from an unofficial mirror or APK website.
 
 The exact wording and location of these options varies by television.
 
+## Choose your connections
+
+Open **Connections** > **Setup & checks** > **Start guided setup**. Choose
+Frigate, Home Assistant, or both. Either service can go first, and you can
+return to unfinished steps later. Review notification and privacy choices,
+then use **Apply choices** when you are ready to enable them.
+
+For Home Assistant, follow the [Home Assistant setup guide](home-assistant.md).
+Home Assistant-only setup can finish without adding a Frigate connection.
+
 ## Connect to Frigate
 
 Enter your Frigate server address, username, and password. Use the same secure
 `https://` address you normally use in a browser when possible.
 
-Keep **Live video address** set to **Same as Frigate (recommended)** unless live
-video must use a different local host or port. If you choose a separate
-address, Opah shows the additional fields and explains what they affect.
+In guided setup, **Advanced live video options** can usually stay closed.
+Open it only when your live video uses a different local host or port. The
+direct connection form offers **Same as Frigate (recommended)** for the usual
+setup.
 
-Select an address or sign-in field to open the on-screen keyboard. Choose
-**Test connection** to check your entries or **Connect** to sign in. The form
-stays open if a detail needs correcting, so you can fix it without entering
-everything again. After the first successful sign-in, Opah can remember the
+Select an address or sign-in field to open the on-screen keyboard. In guided
+setup, choose **Check connection** to check your entries or **Sign in and save**
+to connect. The direct connection form uses **Test connection** and **Connect**.
+The form stays open if a detail needs correcting, so you can fix it without
+entering everything again. After the first successful sign-in, Opah can remember the
 connection and sign in automatically.
 
-If the TV and Frigate server are on the same trusted private network, you can
-instead enter Frigate's direct port `5000` address, such as
+Advanced setups that intentionally use Frigate's internal service on a
+trusted private network can enter a port `5000` address, such as
 `http://frigate.local:5000`. Leave the username and password blank. This option
-does not use an account and gives the TV full Frigate access. Never expose port
-`5000` to the internet; use Frigate's authenticated address for ordinary or
-remote connections.
+does not use an account or its camera restrictions and gives the TV full
+Frigate access. Use the authenticated address for ordinary TV connections.
+Never expose port `5000` to the internet.
 
 ## Get started with the remote
 
-After connecting, **Cameras** shows your camera previews. Select one to watch
-live video. Move left from the edge of the grid to open the side navigation
-and choose **Activity**, **Clips**, or **Settings**.
+After connecting to Frigate, **Cameras** shows your camera previews. Move to a
+camera and press **OK** to watch it live. Hold **OK** for that camera's options.
+Move left from the edge of the grid to open the side navigation and choose
+**Activity**, **Clips**, **Connections**, or **Settings**.
 
 Press Back to close a dialog or return to the previous screen. In camera views
 and playback, Back hides visible controls first. Press Back while the controls
