@@ -2,10 +2,12 @@ package app.opah.tv.data.realtime
 
 import app.opah.tv.data.FrigateJsonParsers
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 
 /**
  * Bounded outer-envelope decoder for the shared authenticated WebSocket.
@@ -19,6 +21,7 @@ class RealtimeInboundMessageParser(
     private val maximumCameraCount: Int = 256,
     private val maximumIdentifierCharacters: Int = 256,
     private val maximumTopicCharacters: Int = 128,
+    private val maximumObjectsPerCamera: Int = 256,
 ) {
     private val reviewDetails = FrigateJsonParsers(json)
 
@@ -27,6 +30,7 @@ class RealtimeInboundMessageParser(
         require(maximumCameraCount > 0)
         require(maximumIdentifierCharacters > 0)
         require(maximumTopicCharacters > 0)
+        require(maximumObjectsPerCamera > 0)
     }
 
     fun parse(rawJson: String): RealtimeInboundMessage? {
@@ -73,18 +77,52 @@ class RealtimeInboundMessageParser(
         val result = LinkedHashMap<String, CameraActivitySignal>(activityObject.size)
         for ((cameraId, element) in activityObject) {
             if (!cameraId.isBoundedText(maximumIdentifierCharacters)) return null
-            val rawSignal = element.strictString()
-                ?.takeIf { it.isBoundedText(MAXIMUM_SIGNAL_CHARACTERS) }
+            result[cameraId] = cameraActivitySignal(element) ?: return null
+        }
+        return RealtimeInboundMessage.CameraActivity(result)
+    }
+
+    private fun cameraActivitySignal(element: JsonElement): CameraActivitySignal? {
+        if (element !is JsonObject) {
+            val value = element.strictString()?.takeIf { it.isBoundedText(MAXIMUM_SIGNAL_CHARACTERS) }
                 ?: return null
-            result[cameraId] = when (rawSignal.trim().lowercase()) {
+            return when (value.trim().lowercase()) {
                 "idle", "off" -> CameraActivitySignal.IDLE
                 "active", "on" -> CameraActivitySignal.ACTIVE
                 "recording" -> CameraActivitySignal.RECORDING
                 else -> CameraActivitySignal.UNKNOWN
             }
         }
-        return RealtimeInboundMessage.CameraActivity(result)
+        // Frigate's onConnect snapshot includes objects and configuration per camera.
+        // Configuration such as record=true is not evidence of current activity.
+        val motion = element["motion"].strictBoolean()
+        if (element.containsKey("motion") && motion == null) return CameraActivitySignal.UNKNOWN
+        val rawObjects = element["objects"] ?: return when (motion) {
+            true -> CameraActivitySignal.ACTIVE
+            false -> CameraActivitySignal.IDLE
+            null -> CameraActivitySignal.UNKNOWN
+        }
+        val objects = rawObjects as? JsonArray ?: return null
+        if (objects.size > maximumObjectsPerCamera) return null
+        var activeObject = false
+        var unknownObject = false
+        for (rawObject in objects) {
+            val value = rawObject as? JsonObject ?: return null
+            when (value["stationary"].strictBoolean()) {
+                false -> activeObject = true
+                true -> Unit
+                null -> unknownObject = true
+            }
+        }
+        return when {
+            motion == true || activeObject -> CameraActivitySignal.ACTIVE
+            unknownObject -> CameraActivitySignal.UNKNOWN
+            else -> CameraActivitySignal.IDLE
+        }
     }
+
+    private fun JsonElement?.strictBoolean(): Boolean? =
+        (this as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull
 
     private fun JsonElement?.payloadObject(): JsonObject? = when (this) {
         is JsonObject -> this

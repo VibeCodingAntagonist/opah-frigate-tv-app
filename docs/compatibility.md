@@ -8,7 +8,8 @@ try when a camera does not play.
 | Item | Tested status |
 | --- | --- |
 | Frigate 0.17.2 | Supported stable version |
-| Frigate 0.18.0 RC1 (`a745070`) | Verified against this exact prerelease, including camera browsing, Activity, Clips, and Monitor on the main TV |
+| Frigate 0.18.2 (`cfa08c5`) | Latest tested 0.18 build for Opah 0.7.1; authenticated camera discovery, live and recorded playback, visual similarity search, and camera-scoped realtime updates checked on the main TV |
+| Frigate 0.18.0 RC1 (`a745070`) | Previously verified prerelease, including camera browsing, Activity, Clips, and Monitor on the main TV |
 | Android TV / Google TV | Android 7.0 or newer |
 | Main test device | 2024 onn. 4K Pro with Android 14 |
 | H.264 camera video | Tested |
@@ -30,9 +31,15 @@ try when a camera does not play.
 | Highlights briefing | Briefing progress, private-camera protection, and review queues have automated coverage and TV checks; a first briefing covers up to 24 hours, with later briefings bounded to seven days |
 | Automatic playback compatibility | Strategy selection, persistence, invalidation, and fallback paths have automated coverage; the full device/codec matrix is pending |
 
-Newer parseable Frigate 0.18 builds are not rejected merely because their exact
-build name is not listed here. They may work before they complete the same
-checks, and Opah shows their tested status separately from basic compatibility.
+Starting with Opah 0.7.1, compatible Frigate 0.18 builds can use browsing and
+realtime updates without an exact build-name match. Authentication and camera
+permissions still apply. Other 0.18 builds may work before they complete the
+same checks; Opah shows tested status separately from basic compatibility.
+
+Opah 0.7.0 has a limitation with Frigate 0.18.2: its realtime updates still
+require an older tested build. Opah 0.7.1 fixes this for Frigate TV alerts and
+automatic Monitor activity updates. Unknown Frigate API generations remain
+unsupported.
 
 ## Camera video formats
 
@@ -164,8 +171,8 @@ starting an on-demand recording also require an administrator account. Deleting
 cannot be undone.
 
 Incidents, Save all angles, Modes, on-demand recording, and Find motion here
-require the exact supported Frigate 0.18 contract. Opah hides these choices on
-Frigate 0.17.2 instead of showing empty or nonworking controls.
+require a compatible Frigate 0.18 server with the feature available. Opah hides
+these choices on Frigate 0.17.2 instead of showing empty or nonworking controls.
 
 ## Network setup
 

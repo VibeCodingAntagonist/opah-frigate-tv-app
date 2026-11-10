@@ -44,10 +44,11 @@ names, addresses, and data shown in the gallery are fictional examples.
 Home Assistant is optional. You can connect it separately to receive messages
 from your home automations, even before setting up Frigate.
 
-Opah supports Frigate 0.17.2. Features that need Frigate 0.18 target the exact
-Frigate 0.18.0 RC1 build `a745070`; its authenticated read-only API and core
-TV workflows have been tested. See the [compatibility guide](docs/compatibility.md)
-for camera video formats, tested devices, and troubleshooting tips.
+Opah supports Frigate 0.17.2 and the Frigate 0.18 API. Frigate 0.18.2
+(`cfa08c5`) is the latest tested 0.18 build for Opah 0.7.1. Other compatible
+0.18 builds can connect without an exact build-name match, but are not all
+individually tested. See the [compatibility guide](docs/compatibility.md) for
+tested features, camera video formats, devices, and troubleshooting tips.
 
 ## Install Opah
 

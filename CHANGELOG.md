@@ -2,6 +2,14 @@
 
 This page lists the user-visible changes in each Opah release.
 
+## 0.7.1
+
+- Keep Frigate TV alerts and automatic Monitor activity updates available
+  after compatible Frigate 0.18 server updates, including Frigate 0.18.2.
+- Improve activity synchronization when connecting or reconnecting to Frigate.
+- Update compatibility information for Frigate 0.18.2 while retaining camera
+  permissions, privacy settings, and the existing Frigate 0.17.2 restrictions.
+
 ## 0.7.0
 
 - Open a camera with **OK** and hold **OK** for its options. Camera headings

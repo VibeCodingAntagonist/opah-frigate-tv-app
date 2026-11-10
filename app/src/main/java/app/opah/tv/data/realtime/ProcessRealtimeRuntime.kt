@@ -90,9 +90,11 @@ internal fun realtimeContractForVersion(
     versionPolicy: FrigateVersionPolicy = FrigateVersionPolicy(),
 ): FrigateRealtimeContract = versionPolicy.evaluate(rawFrigateVersion).let { version ->
     when {
-        !version.validatedContract -> FrigateRealtimeContract.UNSUPPORTED
+        // Exact-build validation is diagnostic evidence, not a 0.18 transport gate.
+        // Authentication and fresh camera scope are enforced by the transport owner.
         version.apiGeneration == FrigateApiGeneration.V0_18 -> FrigateRealtimeContract.FRIGATE_0_18
-        version.apiGeneration == FrigateApiGeneration.V0_17 -> FrigateRealtimeContract.FRIGATE_0_17_2
+        version.apiGeneration == FrigateApiGeneration.V0_17 && version.validatedContract ->
+            FrigateRealtimeContract.FRIGATE_0_17_2
         else -> FrigateRealtimeContract.UNSUPPORTED
     }
 }

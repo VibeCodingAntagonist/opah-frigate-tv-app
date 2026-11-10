@@ -16,7 +16,7 @@ enum class RealtimeDemandOwner {
 @JvmInline
 value class RealtimeLeaseId(val value: String)
 
-/** Only exact, locally locked contracts may select a transport. */
+/** Supported API contracts; authentication and camera scope independently gate transport access. */
 enum class FrigateRealtimeContract {
     FRIGATE_0_17_2,
     FRIGATE_0_18,

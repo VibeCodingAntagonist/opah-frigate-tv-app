@@ -69,6 +69,8 @@ class FrigateVersionPolicy(
     private companion object {
         val DEFAULT_SUPPORTED_STABLE_VERSIONS = setOf(SemanticVersion(0, 17, 2))
         val DEFAULT_SUPPORTED_EXACT_BUILDS = mapOf(
+            "0.18.2" to SemanticVersion(0, 18, 2),
+            "0.18.2-cfa08c5" to SemanticVersion(0, 18, 2),
             "0.18.0-a745070" to SemanticVersion(0, 18, 0),
             "0.18.0-rc1" to SemanticVersion(0, 18, 0),
             "0.18.0-rc.1" to SemanticVersion(0, 18, 0),
@@ -80,7 +82,7 @@ class FrigateVersionPolicy(
             "0.18.0-beta3-344efb6" to SemanticVersion(0, 18, 0),
             "0.18.0-344efb6bc1e8db164bb5d3ec9bbfc6dbaf44deb7" to SemanticVersion(0, 18, 0),
         )
-        const val PRIMARY_TESTED_BUILD = "0.18.0-rc1 (a745070)"
+        const val PRIMARY_TESTED_BUILD = "0.18.2 (cfa08c5)"
         const val LEGACY_TESTED_BUILD = "0.17.2"
         val VERSION_PATTERN = Regex("""(\d+)\.(\d+)\.(\d+)(?:[-+](.+))?""")
 
