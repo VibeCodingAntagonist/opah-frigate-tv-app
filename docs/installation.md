@@ -86,6 +86,14 @@ and playback, Back hides visible controls first. Press Back while the controls
 are hidden to leave the view. Press the center button to reveal the controls,
 then press it again to activate the focused control.
 
+For an optional single-camera connection, hold **OK** on its tile and choose
+**Play using HTTPS** when available. It requires authenticated HTTPS and
+Frigate 0.18.2 or a compatible later stable 0.18 release. It applies only to that
+viewing session. In this view, **Back** leaves immediately, closing an open
+choice dialog first; **Home** stops the connection. See the
+[compatibility guide](compatibility.md#optional-https-live-video) for full
+requirements and troubleshooting.
+
 Choose **New view** on Cameras to save two to four cameras together. In
 **Settings** > **Appearance**, choose a theme or turn on **High contrast**,
 **Reduce motion**, or **Reduce transparency**.

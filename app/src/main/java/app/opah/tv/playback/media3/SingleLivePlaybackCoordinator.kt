@@ -463,7 +463,7 @@ internal class SingleLivePlaybackCoordinator(
     private companion object {
         const val MAX_PREPARED_REQUESTS = 16
         const val MAX_LIVE_SOURCES = 32
-        const val SINGLE_LIVE_COMPATIBILITY_REVISION = 1
+        const val SINGLE_LIVE_COMPATIBILITY_REVISION = 2
     }
 }
 

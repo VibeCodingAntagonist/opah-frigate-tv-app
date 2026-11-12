@@ -113,6 +113,35 @@ can reach it. You can also remove the old Mobile App device in Home Assistant.
 
 ## Keeping the connection safe
 
+### Optional HTTPS live video
+
+**Play using HTTPS** is an explicit choice for one live-camera viewing session.
+It uses the configured Frigate server address and signed-in account, with the
+TV's normal certificate and hostname checks. Redirects and arbitrary video
+addresses are rejected. Opah does not create server streams or change Frigate's
+configuration to make a camera play.
+
+Opah checks the selected camera and stream against fresh account permissions
+and local PIN, guest, and privacy rules before opening, retrying, changing the
+stream, or resuming. Access is checked again while playing. Observed permission
+loss, a failed access check, or expired access information stops playback and
+discards queued video. Server-side permission changes are detected through
+periodic checks rather than instant notification.
+
+Back leaves HTTPS playback; Home stops its connection and releases video and
+audio. Returning from Home requires a new connection and access check. Video
+bytes are held only in bounded memory for playback, with no persistent video
+cache, downloaded recording, or raw response logging from this live session.
+This choice does not enable a background camera service or save a new
+connection preference.
+
+The option requires authenticated HTTPS on Frigate 0.18.2 or a compatible later
+stable 0.18 release. Older servers retain their existing connections; this
+option is not used to work around missing server-side camera authorization.
+See [compatibility](compatibility.md#optional-https-live-video) for requirements.
+
+### Alerts, notification pause, and guided setup
+
 Inline Frigate recording previews require separate opt-in, interactive alerts,
 full notification pictures, and permission to open the recording. An alert
 picture never grants playback access. Guest mode and a required PIN unlock

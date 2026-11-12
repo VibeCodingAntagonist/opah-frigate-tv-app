@@ -73,6 +73,7 @@ enum class Media3CauseCategory {
     RTSP_UNSUPPORTED_TRANSPORT,
     PARSING,
     RESOURCE_EXHAUSTED,
+    NATIVE_VIDEO_SIZE_UNSUPPORTED,
     NETWORK_IO,
     OTHER,
 }
@@ -84,6 +85,9 @@ enum class Media3HttpStatus {
     NOT_FOUND_OR_GONE,
     OTHER,
 }
+
+/** Fixed parser evidence only; never an SDP attribute value or exception message. */
+enum class Media3RtspSetupProblem { NONE, MISSING_FMTP, MISSING_VPS, MISSING_SPS, MISSING_PPS }
 
 enum class Media3ErrorKind {
     AUTHENTICATION_EXPIRED,
@@ -129,6 +133,7 @@ data class Media3PlaybackFailureEvidence(
     val causeCategory: Media3CauseCategory = Media3CauseCategory.NONE,
     val httpStatus: Media3HttpStatus = Media3HttpStatus.NONE,
     val sourceProtocol: Media3SourceProtocol = Media3SourceProtocol.UNKNOWN,
+    val rtspSetupProblem: Media3RtspSetupProblem = Media3RtspSetupProblem.NONE,
 )
 
 /** Injectable pure seam between Media3 extraction and the compatibility domain. */
@@ -144,7 +149,11 @@ object DefaultMedia3PlaybackFailureClassifier : Media3PlaybackFailureClassifier 
         return ClassifiedPlaybackFailure(
             category = category,
             phase = category.failurePhase(evidence.origin),
-            diagnosticCode = category.diagnosticCode(),
+            diagnosticCode = if (category == FailureCategory.MEDIA_SOURCE_OR_SDP &&
+                evidence.sourceProtocol == Media3SourceProtocol.RTSP &&
+                evidence.causeCategory in setOf(Media3CauseCategory.PARSING, Media3CauseCategory.RTSP_SOURCE)
+            ) evidence.rtspSetupProblem.diagnosticCode() ?: category.diagnosticCode()
+            else category.diagnosticCode(),
         )
     }
 
@@ -157,6 +166,14 @@ object DefaultMedia3PlaybackFailureClassifier : Media3PlaybackFailureClassifier 
         }
         if (evidence.errorKind == Media3ErrorKind.PERMISSION_DENIED) {
             return FailureCategory.AUTHORIZATION
+        }
+
+        if (evidence.causeCategory == Media3CauseCategory.NATIVE_VIDEO_SIZE_UNSUPPORTED) {
+            return when (evidence.httpStatus) {
+                Media3HttpStatus.UNAUTHORIZED -> FailureCategory.AUTHENTICATION
+                Media3HttpStatus.FORBIDDEN -> FailureCategory.AUTHORIZATION
+                else -> FailureCategory.UNSUPPORTED_VIDEO_SIZE
+            }
         }
 
         if (evidence.errorKind == Media3ErrorKind.NOT_SUPPORTED) {
@@ -182,6 +199,11 @@ object DefaultMedia3PlaybackFailureClassifier : Media3PlaybackFailureClassifier 
         if (evidence.httpStatus != Media3HttpStatus.NONE) {
             return evidence.httpStatus.httpFailureCategory()
         }
+
+        if (evidence.sourceProtocol == Media3SourceProtocol.RTSP &&
+            evidence.rtspSetupProblem != Media3RtspSetupProblem.NONE &&
+            evidence.causeCategory in setOf(Media3CauseCategory.PARSING, Media3CauseCategory.RTSP_SOURCE)
+        ) return FailureCategory.MEDIA_SOURCE_OR_SDP
 
         when (evidence.errorKind) {
             Media3ErrorKind.PARSING_MALFORMED,
@@ -370,6 +392,7 @@ object Media3PlaybackFailureEvidenceExtractor {
             causeCategory = causes.category,
             httpStatus = causes.httpStatus,
             sourceProtocol = mergeProtocol(sourceProtocol, causeProtocol),
+            rtspSetupProblem = causes.rtspSetupProblem,
         )
     }
 }
@@ -403,6 +426,7 @@ private data class CauseSummary(
     val category: Media3CauseCategory,
     val httpStatus: Media3HttpStatus,
     val hasRtspCause: Boolean,
+    val rtspSetupProblem: Media3RtspSetupProblem,
 )
 
 private fun summarizeCauses(firstCause: Throwable?): CauseSummary {
@@ -412,9 +436,18 @@ private fun summarizeCauses(firstCause: Throwable?): CauseSummary {
     var category = Media3CauseCategory.NONE
     var httpStatus = Media3HttpStatus.NONE
     var hasRtspCause = false
+    var setupProblem = Media3RtspSetupProblem.NONE
+    var conflictingSetup = false
 
     while (current != null && depth < MAX_CAUSE_DEPTH && visited.add(current)) {
-        val candidate = when (current) {
+        val setup = current.missingRtspSetup()
+        if (setup != Media3RtspSetupProblem.NONE) {
+            if (setupProblem != Media3RtspSetupProblem.NONE && setupProblem != setup) conflictingSetup = true
+            setupProblem = setup
+            hasRtspCause = true
+        }
+        val candidate = if (setup != Media3RtspSetupProblem.NONE) Media3CauseCategory.PARSING else when (current) {
+            is NativeVideoSizeUnsupportedException -> Media3CauseCategory.NATIVE_VIDEO_SIZE_UNSUPPORTED
             is UnknownHostException -> Media3CauseCategory.DNS
             is NoRouteToHostException -> Media3CauseCategory.NO_ROUTE
             is ConnectException,
@@ -450,7 +483,39 @@ private fun summarizeCauses(firstCause: Throwable?): CauseSummary {
         category = category,
         httpStatus = httpStatus,
         hasRtspCause = hasRtspCause,
+        rtspSetupProblem = if (conflictingSetup || current != null) Media3RtspSetupProblem.NONE else setupProblem,
     )
+}
+
+/**
+ * Issue #21 (reported by megabitus98): Media3 1.11 requires out-of-band setup for HEVC.
+ * Match only pinned parser checks, not arbitrary exception text mentioning these words.
+ * fmtp is also required by other codecs, so its user-facing message must remain codec-neutral.
+ */
+private fun Throwable.missingRtspSetup(): Media3RtspSetupProblem {
+    if (this !is IllegalArgumentException) return Media3RtspSetupProblem.NONE
+    val safeLengthMessage = message?.takeIf { it.length <= MAX_SETUP_MESSAGE_LENGTH }
+        ?: return Media3RtspSetupProblem.NONE
+    val detail = when (safeLengthMessage) {
+        "missing attribute fmtp" -> Media3RtspSetupProblem.MISSING_FMTP
+        "missing sprop-vps parameter" -> Media3RtspSetupProblem.MISSING_VPS
+        "missing sprop-sps parameter" -> Media3RtspSetupProblem.MISSING_SPS
+        "missing sprop-pps parameter" -> Media3RtspSetupProblem.MISSING_PPS
+        else -> return Media3RtspSetupProblem.NONE
+    }
+    val method = if (detail == Media3RtspSetupProblem.MISSING_FMTP) "generatePayloadFormat"
+        else "processH265FmtpAttribute"
+    return if (stackTrace.take(MAX_PARSER_FRAMES).any {
+            it.className == "androidx.media3.exoplayer.rtsp.RtspMediaTrack" && it.methodName == method
+        }) detail else Media3RtspSetupProblem.NONE
+}
+
+private fun Media3RtspSetupProblem.diagnosticCode(): PlaybackDiagnosticCode? = when (this) {
+    Media3RtspSetupProblem.NONE -> null
+    Media3RtspSetupProblem.MISSING_FMTP -> PlaybackDiagnosticCode.RTSP_MISSING_FMTP
+    Media3RtspSetupProblem.MISSING_VPS -> PlaybackDiagnosticCode.RTSP_MISSING_VPS
+    Media3RtspSetupProblem.MISSING_SPS -> PlaybackDiagnosticCode.RTSP_MISSING_SPS
+    Media3RtspSetupProblem.MISSING_PPS -> PlaybackDiagnosticCode.RTSP_MISSING_PPS
 }
 
 private fun Media3PlaybackFailureEvidence.resolvedRendererType(): Media3RendererType {
@@ -514,6 +579,8 @@ private fun Media3PlaybackFailureEvidence.unspecifiedIoFailureCategory(): Failur
             FailureCategory.DEVICE_RESOURCE_OR_DECODER_LIMIT
         }
 
+        Media3CauseCategory.NATIVE_VIDEO_SIZE_UNSUPPORTED -> FailureCategory.UNSUPPORTED_VIDEO_SIZE
+
         Media3CauseCategory.NETWORK_IO -> if (sourceProtocol != Media3SourceProtocol.UNKNOWN) {
             FailureCategory.NETWORK
         } else {
@@ -546,6 +613,7 @@ private fun FailureCategory.failurePhase(origin: Media3FailureOrigin): FailurePh
     FailureCategory.AUDIO_DECODER,
     FailureCategory.VIDEO_DECODER,
     FailureCategory.UNSUPPORTED_VIDEO_CODEC,
+    FailureCategory.UNSUPPORTED_VIDEO_SIZE,
     FailureCategory.DEVICE_RESOURCE_OR_DECODER_LIMIT,
     -> FailurePhase.DECODER
 
@@ -564,6 +632,7 @@ private fun FailureCategory.failurePhase(origin: Media3FailureOrigin): FailurePh
 }
 
 private fun FailureCategory.diagnosticCode(): PlaybackDiagnosticCode = when (this) {
+    FailureCategory.UNSUPPORTED_VIDEO_SIZE -> PlaybackDiagnosticCode.VIDEO_SIZE_UNSUPPORTED
     FailureCategory.AUDIO_DECODER,
     FailureCategory.AUDIO_RENDERER,
     -> PlaybackDiagnosticCode.AUDIO_DECODER
@@ -715,6 +784,7 @@ private fun Int.toHttpStatus(): Media3HttpStatus = when (this) {
 
 private val Media3CauseCategory.priority: Int
     get() = when (this) {
+        Media3CauseCategory.NATIVE_VIDEO_SIZE_UNSUPPORTED -> 11
         Media3CauseCategory.RESOURCE_EXHAUSTED -> 10
         Media3CauseCategory.DNS,
         Media3CauseCategory.NO_ROUTE,
@@ -740,4 +810,6 @@ private val DECODER_ERROR_KINDS = setOf(
     Media3ErrorKind.DECODING_RESOURCES_RECLAIMED,
 )
 
-private const val MAX_CAUSE_DEPTH = 16
+private const val MAX_CAUSE_DEPTH = 12
+private const val MAX_PARSER_FRAMES = 24
+private const val MAX_SETUP_MESSAGE_LENGTH = 32

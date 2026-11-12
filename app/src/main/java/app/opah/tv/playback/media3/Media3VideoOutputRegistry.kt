@@ -33,6 +33,9 @@ internal interface Media3VideoOutputRegistry {
     fun claim(attemptId: PlaybackAttemptId): Media3VideoOutputClaimResult
 
     fun release(attachment: Media3VideoOutputAttachment): Boolean
+
+    /** Atomic opt-in transport reservation; pending RTSP registration is never replaced. */
+    fun acquireExclusive(target: Media3VideoOutputTarget, attemptId: PlaybackAttemptId): ExclusiveVideoOutputLease? = null
 }
 
 /**
@@ -54,6 +57,23 @@ internal class BoundedMedia3VideoOutputRegistry(
     private val releasedAttachments = LinkedHashSet<AttachmentIdentity>()
     private var nextGeneration = 1L
     private var generationExhausted = false
+
+    // Adapted from Goofyschooler's PR #18; retain exclusive ownership through teardown.
+    override fun acquireExclusive(target: Media3VideoOutputTarget, attemptId: PlaybackAttemptId): ExclusiveVideoOutputLease? = synchronized(lock) {
+        if (registration != null || activeAttachment != null) return@synchronized null
+        val registrationGeneration = allocateGenerationLocked() ?: return@synchronized null
+        val attachmentGeneration = allocateGenerationLocked() ?: return@synchronized null
+        val record = RegistrationRecord(registrationGeneration, target)
+        val attachment = Media3VideoOutputAttachment(attemptId, attachmentGeneration, target)
+        registration = record
+        activeAttachment = attachment
+        ExclusiveVideoOutputLease(attachment) {
+            synchronized(lock) {
+                if (registration !== record || activeAttachment !== attachment) false
+                else { release(attachment); registration = null; true }
+            }
+        }
+    }
 
     override fun register(target: Media3VideoOutputTarget): Media3VideoOutputRegistrationResult =
         synchronized(lock) {

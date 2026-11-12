@@ -12,7 +12,6 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.exoplayer.DecoderCounters
-import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.audio.AudioSink
@@ -620,7 +619,10 @@ private class ProbedMedia3RenderersFactory(
     decoderMode: DecoderMode,
     softwareDecoderPermitted: Boolean,
     private val progressEvidence: Media3PlaybackProgressEvidenceSession,
-) : DefaultRenderersFactory(context) {
+) : SizeCheckedRenderersFactory(
+    context,
+    onSizeRejected = { progressEvidence.cancel(progressEvidence.attemptId) },
+) {
     init {
         val selector = MediaCodecSelector { mimeType, requiresSecure, requiresTunneling ->
             val discovered = MediaCodecSelector.DEFAULT.getDecoderInfos(

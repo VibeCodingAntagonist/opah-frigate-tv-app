@@ -49,6 +49,13 @@ import app.opah.tv.playback.compatibility.DecoderMode
 import app.opah.tv.playback.compatibility.PlaybackCandidate
 import app.opah.tv.playback.compatibility.PlaybackCompatibilityState
 import app.opah.tv.playback.compatibility.PlaybackResult
+import app.opah.tv.playback.compatibility.PlaybackTerminalCause
+import app.opah.tv.playback.compatibility.PlaybackSnapshotPresentationOutcome
+import app.opah.tv.playback.compatibility.FailureCategory
+import app.opah.tv.playback.compatibility.PlaybackDiagnosticCode
+import app.opah.tv.playback.compatibility.isMissingRtspSetup
+import app.opah.tv.playback.media3.DefaultMedia3PlaybackFailureClassifier
+import app.opah.tv.playback.media3.classify
 import app.opah.tv.playback.compatibility.TransportMode
 import app.opah.tv.playback.media3.PlayerViewMedia3VideoOutputTarget
 import app.opah.tv.ui.DOCUMENTATION_URI_PREFIX
@@ -71,6 +78,13 @@ internal data class NativePlaybackControl(
     val enabled: Boolean = true,
     val selected: Boolean = false,
     val onClick: () -> Unit,
+)
+
+internal data class NativeLiveRecoveryActions(
+    val retry: (() -> Unit)? = null,
+    val chooseStream: (() -> Unit)? = null,
+    val tryHttps: (() -> Unit)? = null,
+    val chooseConnection: (() -> Unit)? = null,
 )
 
 internal enum class NativePlaybackControlPlacement { CONTEXT, MORE }
@@ -173,6 +187,10 @@ internal class NativePlaybackSurface(
     private val onAutomaticReviewWatchThresholdReached: () -> Unit = {},
     private val onPlaybackEnded: () -> Unit = {},
     initialFeedbackPending: Boolean = false,
+    initialLiveRecoveryActions: NativeLiveRecoveryActions = NativeLiveRecoveryActions(),
+    private val prepareHttpLive: suspend (PlaybackRequest) -> app.opah.tv.playback.AuthenticatedHttpLive? = { null },
+    private val httpsPlayerFactory: (app.opah.tv.playback.AuthenticatedHttpLive, app.opah.tv.playback.media3.ExclusiveVideoOutputLease) -> app.opah.tv.playback.HttpsLivePlayer =
+        { live, lease -> app.opah.tv.playback.HttpsLivePlayer(activity, (activity.application as OpahApplication).container.httpClient, lease, live.isAuthorized) },
     private val livePlayerFactory: LivePlayerFactory = (activity.application as OpahApplication).container.livePlayerFactory,
     private val openLiveSession: suspend (SingleLivePlaybackRequestId, PlayerViewMedia3VideoOutputTarget, Boolean) -> SingleLivePlaybackSession =
         { id, output, videoOnly -> (activity.application as OpahApplication).container.singleLivePlaybackCoordinator.open(id, output, videoOnly) },
@@ -323,6 +341,7 @@ internal class NativePlaybackSurface(
     }
     private var player: ExoPlayer? = null
     private var liveJob: Job? = null
+    private var httpsBackend: app.opah.tv.playback.HttpsLivePlayer? = null
     private var directPlaybackJob: Job? = null
     private var directLivePlayer: LivePlayer? = null
     private var recordedPositionMillis = 0L
@@ -351,8 +370,13 @@ internal class NativePlaybackSurface(
     private var interactionOverlayOpen = false
     private var closed = false
     private var feedbackPending = initialFeedbackPending
+    private var liveRecoveryActions = initialLiveRecoveryActions
+    private var setupRecoveryVisible = false
+    private var recoveryBackOnly = false
+    private var recoverySizeOnly = false
     private val dynamicButtons = linkedMapOf<String, TextView>()
-    private val coordinatorOwned = request.kind == PlaybackKind.LIVE && request.liveCompatibilityRequestId != null
+    private val coordinatorOwned = request.kind == PlaybackKind.LIVE &&
+        (request.liveCompatibilityRequestId != null || request.httpsLiveRequestId != null)
     private val playPause = controlButton("Pause", R.drawable.ic_pause, "Pause playback", emphasized = true) {
         togglePlayback()
     }
@@ -389,6 +413,28 @@ internal class NativePlaybackSurface(
     private val moreButton = controlButton("More", R.drawable.ic_more, "More playback actions") { toggleMoreControls() }.apply {
         tag = "more"
         visibility = View.GONE
+    }
+    private val recoveryChooseStream = controlButton("Stream", R.drawable.ic_videocam, "Choose another stream") {
+        liveRecoveryActions.chooseStream?.invoke()
+    }.apply { tag = "playback:recovery-stream" }
+    private val recoveryRetry = controlButton("Try again", R.drawable.ic_retry, "Try again") {
+        liveRecoveryActions.retry?.invoke()
+    }.apply { tag = "playback:recovery-retry" }
+    private val recoveryHttps = controlButton("HTTPS", R.drawable.ic_videocam, "Try HTTPS") { liveRecoveryActions.tryHttps?.invoke() }
+        .apply { tag = "playback:recovery-https" }
+    private val recoveryConnection = controlButton("Connection", R.drawable.ic_videocam, "Choose another connection") { liveRecoveryActions.chooseConnection?.invoke() }
+        .apply { tag = "playback:recovery-connection" }
+    private val recoveryBack = controlButton("Back", R.drawable.ic_arrow_back, "Back", action = onClose)
+        .apply { tag = "playback:recovery-back" }
+    private val recoveryControls = LinearLayout(activity).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER
+        visibility = View.GONE
+        addView(recoveryHttps)
+        addView(recoveryChooseStream)
+        addView(recoveryRetry)
+        addView(recoveryConnection)
+        addView(recoveryBack)
     }
     private val topPanel: LinearLayout
     private val bottomPanel: LinearLayout
@@ -442,6 +488,7 @@ internal class NativePlaybackSurface(
             addView(controlHint, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
             addView(moreScroller, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
             addView(mainControlScroller, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+            addView(recoveryControls, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         }
         addView(
             bottomPanel,
@@ -460,6 +507,8 @@ internal class NativePlaybackSurface(
         )
         if (documentationPlayback) {
             startDocumentationPlayback()
+        } else if (request.httpsLiveRequestId != null) {
+            startHttpsPlayback()
         } else if (request.kind == PlaybackKind.LIVE && request.liveCompatibilityRequestId != null) {
             startCompatibilityPlayback(request.liveCompatibilityRequestId)
         } else {
@@ -479,8 +528,40 @@ internal class NativePlaybackSurface(
         if (request.compatibilityTest) {
             bottomPanel.visibility = View.GONE
         } else {
-            primaryControls.post { playPause.requestFocus() }
+            primaryControls.post { if (!setupRecoveryVisible) playPause.requestFocus() }
         }
+    }
+
+    fun updateLiveRecoveryActions(actions: NativeLiveRecoveryActions) {
+        liveRecoveryActions = actions
+        recoveryChooseStream.visibility = if (actions.chooseStream == null || recoveryBackOnly) View.GONE else View.VISIBLE
+        recoveryRetry.visibility = if (actions.retry == null || recoveryBackOnly || recoverySizeOnly) View.GONE else View.VISIBLE
+        recoveryHttps.visibility = if (actions.tryHttps == null || recoveryBackOnly || recoverySizeOnly) View.GONE else View.VISIBLE
+        recoveryConnection.visibility = if (actions.chooseConnection == null || recoveryBackOnly || recoverySizeOnly) View.GONE else View.VISIBLE
+        if (setupRecoveryVisible && findFocus()?.takeIf {
+                recoveryControls.isAncestorOf(it) && it.isShown && it.isEnabled && it.isFocusable
+            } == null
+        ) focusRecovery()
+    }
+
+    private fun showSetupRecovery(visible: Boolean, backOnly: Boolean = false) {
+        val newlyVisible = visible && !setupRecoveryVisible
+        recoveryBackOnly = backOnly
+        setupRecoveryVisible = visible && !request.compatibilityTest
+        recoveryControls.visibility = if (setupRecoveryVisible) View.VISIBLE else View.GONE
+        mainControlScroller.visibility = if (setupRecoveryVisible) View.GONE else View.VISIBLE
+        if (setupRecoveryVisible) {
+            moreExpanded = false
+            moreScroller.visibility = View.GONE
+            pictureInPictureReady = false
+            updateLiveRecoveryActions(liveRecoveryActions)
+            showChrome(requestFocus = false)
+            if (newlyVisible) recoveryControls.post { if (!closed && setupRecoveryVisible && !interactionOverlayOpen) focusRecovery() }
+        }
+    }
+
+    private fun focusRecovery() {
+        (recoveryControls.firstEnabledFocusableChild() ?: recoveryBack).requestFocus()
     }
 
     fun updateControls(updated: List<NativePlaybackControl>, message: String?, feedbackPending: Boolean = false) {
@@ -554,6 +635,7 @@ internal class NativePlaybackSurface(
 
     fun close() {
         closed = true
+        stopHttpsPlayback()
         selectTarget?.isPressed = false
         selectTarget = null
         heldKeys.clear()
@@ -598,7 +680,8 @@ internal class NativePlaybackSurface(
 
     /** Remote and system Back dismiss all visible playback controls before leaving. */
     fun dismissPlaybackOsd(): Boolean {
-        if (closed || pictureInPictureActive || !chromeVisible) return false
+        if (request.httpsLiveRequestId != null) return false
+        if (closed || pictureInPictureActive || !chromeVisible || setupRecoveryVisible) return false
         chromeHideJob?.cancel()
         chromeHideJob = null
         selectTarget?.isPressed = false
@@ -801,7 +884,7 @@ internal class NativePlaybackSurface(
             !interactionOverlayOpen &&
             (requestFocus || focused == null || focused === this || !bottomPanel.isAncestorOf(focused))
         ) {
-            playPause.requestFocus()
+            if (setupRecoveryVisible) focusRecovery() else playPause.requestFocus()
         }
         scheduleChromeHide()
     }
@@ -826,7 +909,7 @@ internal class NativePlaybackSurface(
     }
 
     private fun canHideChrome(): Boolean = !closed && !request.compatibilityTest &&
-        !pictureInPictureActive && !interactionOverlayOpen && !moreExpanded && !diagnosticsVisible &&
+        !pictureInPictureActive && !interactionOverlayOpen && !moreExpanded && !diagnosticsVisible && !setupRecoveryVisible &&
         heldKeys.isEmpty() && revealKey == null && selectTarget == null && !feedbackPending &&
         hasWindowFocus() && player?.isPlaying == true
 
@@ -869,6 +952,112 @@ internal class NativePlaybackSurface(
         }
     }
 
+    private fun stopHttpsPlayback(): Boolean {
+        val backend = httpsBackend ?: return true
+        httpsBackend = null
+        return backend.close()
+    }
+
+    private fun showHttpsFailure(reason: app.opah.tv.playback.HttpsLiveFailure) {
+        if (reason == app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED) {
+            title.setText(R.string.native_https_title)
+            playerView.visibility = View.INVISIBLE
+            diagnosticsVisible = false
+        }
+        recoverySizeOnly = reason == app.opah.tv.playback.HttpsLiveFailure.VIDEO_SIZE
+        status.setText(when (reason) {
+            app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED -> R.string.native_live_access_changed
+            app.opah.tv.playback.HttpsLiveFailure.VIDEO_SIZE -> R.string.native_live_video_size_unsupported
+            app.opah.tv.playback.HttpsLiveFailure.TIMEOUT -> R.string.native_https_timeout
+            app.opah.tv.playback.HttpsLiveFailure.UNAVAILABLE -> R.string.native_https_unavailable
+            app.opah.tv.playback.HttpsLiveFailure.CLEANUP_FAILED -> R.string.native_https_cleanup_failed
+            app.opah.tv.playback.HttpsLiveFailure.BUSY -> R.string.native_https_busy
+            app.opah.tv.playback.HttpsLiveFailure.FAILED -> R.string.native_https_failed
+        })
+        showSetupRecovery(true, reason == app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED ||
+            reason == app.opah.tv.playback.HttpsLiveFailure.CLEANUP_FAILED)
+    }
+
+    private fun startHttpsPlayback() {
+        liveJob = activity.lifecycleScope.launch {
+            activity.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                showSetupRecovery(false)
+                recoverySizeOnly = false
+                if (request.kind != PlaybackKind.LIVE || request.compatibilityTest || request.liveCompatibilityRequestId != null) {
+                    showHttpsFailure(app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED)
+                    return@repeatOnLifecycle
+                }
+                status.setText(R.string.native_https_connecting)
+                val live = try { prepareHttpLive(request) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { null }
+                if (closed) return@repeatOnLifecycle
+                if (live == null || !live.isAuthorized()) {
+                    showHttpsFailure(app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED)
+                    return@repeatOnLifecycle
+                }
+                title.text = request.title
+                val target = PlayerViewMedia3VideoOutputTarget(playerView, ::attachPlayer) { if (player === it) detachPlayer() }
+                val attempt = app.opah.tv.playback.compatibility.PlaybackAttemptId(
+                    app.opah.tv.playback.compatibility.PlaybackSessionId("https-${java.util.UUID.randomUUID()}"), 1)
+                val lease = app.opah.tv.playback.media3.awaitExclusiveVideoOutput(
+                    app.opah.tv.playback.media3.ProcessMedia3VideoOutputRegistry.instance, target, attempt,
+                    { !closed && live.isAuthorized() }, elapsedMillis = SystemClock::elapsedRealtime)
+                if (lease == null) {
+                    showHttpsFailure(if (live.isAuthorized()) app.opah.tv.playback.HttpsLiveFailure.BUSY else app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED)
+                    return@repeatOnLifecycle
+                }
+                val backend = try { httpsPlayerFactory(live, lease) } catch (_: Exception) {
+                    lease.finish { false }
+                    showHttpsFailure(app.opah.tv.playback.HttpsLiveFailure.CLEANUP_FAILED)
+                    return@repeatOnLifecycle
+                }
+                httpsBackend = backend
+                var firstFrame = false
+                var failure: app.opah.tv.playback.HttpsLiveFailure? = null
+                val frames = java.util.concurrent.atomic.AtomicLong()
+                backend.player.setVideoFrameMetadataListener { _, _, _, _ -> frames.incrementAndGet() }
+                val listener = object : Player.Listener {
+                    override fun onRenderedFirstFrame() { firstFrame = true }
+                    override fun onPlayerError(error: PlaybackException) {
+                        failure = when {
+                            !live.isAuthorized() || app.opah.tv.playback.liveFailureStatus(error) in setOf("HTTP 401", "HTTP 403") -> app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED
+                            DefaultMedia3PlaybackFailureClassifier.classify(error).category == FailureCategory.UNSUPPORTED_VIDEO_SIZE -> app.opah.tv.playback.HttpsLiveFailure.VIDEO_SIZE
+                            else -> app.opah.tv.playback.HttpsLiveFailure.UNAVAILABLE
+                        }
+                    }
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (playbackState == Player.STATE_ENDED) failure = app.opah.tv.playback.HttpsLiveFailure.UNAVAILABLE
+                    }
+                }
+                try {
+                    backend.player.addListener(listener)
+                    kotlinx.coroutines.coroutineScope {
+                        val refresh = launch {
+                            while (true) { delay(30_000L); if (!live.refreshAuthorization()) { failure = app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED; break } }
+                        }
+                        try {
+                            val result = app.opah.tv.playback.runAuthorizedLiveSession(
+                                authorized = { !closed && live.isAuthorized() },
+                                start = { backend.prepare(live.uri, LivePlaybackOptions(videoOnly = request.compatibilityTestVideoOnly)) },
+                                firstFrame = { firstFrame }, failure = { failure },
+                                close = { if (!stopHttpsPlayback()) failure = app.opah.tv.playback.HttpsLiveFailure.CLEANUP_FAILED },
+                                progress = frames::get, wantsPlayback = { backend.player.playWhenReady }, elapsedMillis = SystemClock::elapsedRealtime)
+                            if (!closed) showHttpsFailure(if (failure == app.opah.tv.playback.HttpsLiveFailure.CLEANUP_FAILED) requireNotNull(failure)
+                                else result ?: failure ?: app.opah.tv.playback.HttpsLiveFailure.FAILED)
+                        } finally { refresh.cancel() }
+                    }
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { if (!closed) showHttpsFailure(app.opah.tv.playback.HttpsLiveFailure.FAILED) }
+                finally {
+                    backend.player.removeListener(listener)
+                    stopHttpsPlayback()
+                    detachPlayer()
+                }
+            }
+        }
+    }
+
     private fun startDocumentationPlayback() {
         status.text = request.detail ?: if (request.kind == PlaybackKind.LIVE) "Live" else "Recording"
         if (request.kind == PlaybackKind.LIVE) {
@@ -885,6 +1074,7 @@ internal class NativePlaybackSurface(
         liveJob = activity.lifecycleScope.launch {
             activity.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 compatibilityTestExitScheduled = false
+                showSetupRecovery(false)
                 retry.visibility = View.GONE
                 status.text = if (request.compatibilityTest) {
                     "Checking camera compatibility automatically"
@@ -917,13 +1107,19 @@ internal class NativePlaybackSurface(
                             is PlaybackCompatibilityState.Verified,
                             is PlaybackCompatibilityState.UnpersistedLive,
                             is PlaybackCompatibilityState.Persisting,
-                            -> "Playing with a verified camera setting"
+                            -> session.downgradeExplanation(snapshot) ?: "Live"
                             is PlaybackCompatibilityState.Finished -> when (state.result) {
                                 is PlaybackResult.VerifiedLive,
                                 is PlaybackResult.UnpersistedLive,
                                 -> "Playing with a verified camera setting"
                                 is PlaybackResult.Cancelled -> "Compatibility check stopped"
-                                else -> "No reliable playback choice was found"
+                                else -> if (nativePlaybackAccessDenied(state.result)) {
+                                    activity.getString(R.string.native_live_access_changed)
+                                } else if (nativePlaybackMissingSetup(state.result) != null) {
+                                    activity.getString(nativeMissingSetupMessage(requireNotNull(nativePlaybackMissingSetup(state.result))))
+                                } else if (nativePlaybackSizeRejected(state.result)) {
+                                    activity.getString(R.string.native_live_video_size_unsupported)
+                                } else "No reliable playback choice was found"
                             }
                             is PlaybackCompatibilityState.Idle -> "Preparing compatibility check"
                             is PlaybackCompatibilityState.Releasing,
@@ -931,6 +1127,9 @@ internal class NativePlaybackSurface(
                             -> "Saving the camera setting"
                             is PlaybackCompatibilityState.PresentingSnapshot -> "Confirming video output"
                         }
+                        val result = (state as? PlaybackCompatibilityState.Finished)?.result
+                        val denied = result?.let(::nativePlaybackAccessDenied) == true
+                        showSetupRecovery(denied || result?.let(::nativePlaybackMissingSetup) != null, backOnly = denied)
                         if (request.compatibilityTest) {
                             nativeCompatibilityTestStatus(request.title, state)?.let(onCompatibilityTestStatus)
                         }
@@ -992,7 +1191,13 @@ internal class NativePlaybackSurface(
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                status.setText(R.string.native_playback_failed)
+                // The coordinator owns live failure/recovery text after its bounded ladder.
+                val failure = DefaultMedia3PlaybackFailureClassifier.classify(error)
+                if (!coordinatorOwned) status.setText(when {
+                    failure.diagnosticCode.isMissingRtspSetup -> nativeMissingSetupMessage(failure.diagnosticCode)
+                    failure.category == FailureCategory.UNSUPPORTED_VIDEO_SIZE -> R.string.native_live_video_size_unsupported
+                    else -> R.string.native_playback_failed
+                })
                 retry.visibility = if (coordinatorOwned) View.GONE else View.VISIBLE
                 updateDiagnostics()
                 showChrome(requestFocus = false)
@@ -1256,6 +1461,44 @@ internal fun nativeCompatibilityTestComplete(state: PlaybackCompatibilityState):
     is PlaybackCompatibilityState.Finished -> nativeCompatibilityTestResultComplete(state.result)
     else -> false
 }
+
+internal fun nativePlaybackSizeRejected(result: PlaybackResult): Boolean {
+    val cause = when (result) {
+        is PlaybackResult.Failed -> result.cause
+        is PlaybackResult.DegradedSnapshot -> result.cause
+        is PlaybackResult.SnapshotUnavailable -> result.cause
+        else -> null
+    }
+    return (cause as? PlaybackTerminalCause.CandidateLadderExhausted)
+        ?.lastFailure?.category == FailureCategory.UNSUPPORTED_VIDEO_SIZE
+}
+
+internal fun nativePlaybackMissingSetup(result: PlaybackResult): PlaybackDiagnosticCode? {
+    if (result is PlaybackResult.SnapshotUnavailable &&
+        result.presentationOutcome == PlaybackSnapshotPresentationOutcome.DENIED
+    ) return null
+    val cause = when (result) {
+        is PlaybackResult.Failed -> result.cause
+        is PlaybackResult.DegradedSnapshot -> result.cause
+        is PlaybackResult.SnapshotUnavailable -> result.cause
+        else -> null
+    }
+    val failure = (cause as? PlaybackTerminalCause.CandidateLadderExhausted)?.lastFailure
+    return failure?.diagnosticCode?.takeIf {
+        failure.category == FailureCategory.MEDIA_SOURCE_OR_SDP && it.isMissingRtspSetup
+    }
+}
+
+internal fun nativePlaybackAccessDenied(result: PlaybackResult): Boolean = when (result) {
+    is PlaybackResult.Blocked -> result.failure.category == FailureCategory.AUTHENTICATION ||
+        result.failure.category == FailureCategory.AUTHORIZATION
+    is PlaybackResult.SnapshotUnavailable -> result.presentationOutcome == PlaybackSnapshotPresentationOutcome.DENIED
+    else -> false
+}
+
+private fun nativeMissingSetupMessage(code: PlaybackDiagnosticCode): Int =
+    if (code == PlaybackDiagnosticCode.RTSP_MISSING_FMTP) R.string.native_live_missing_setup
+    else R.string.native_live_missing_video_setup
 
 internal fun nativeCompatibilityTestResultComplete(result: PlaybackResult): Boolean =
     result !is PlaybackResult.Cancelled

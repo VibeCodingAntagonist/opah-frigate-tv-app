@@ -96,12 +96,17 @@ import app.opah.tv.playback.PlaybackRequest
 import app.opah.tv.playback.RecordedPlayerFactory
 import app.opah.tv.playback.compatibility.PlaybackCompatibilityState
 import app.opah.tv.playback.compatibility.PlaybackResult
+import app.opah.tv.playback.compatibility.FailureCategory
+import app.opah.tv.playback.compatibility.isMissingRtspSetup
+import app.opah.tv.playback.compatibility.PlaybackDiagnosticCode
 import app.opah.tv.playback.compatibility.AudioMode
 import app.opah.tv.playback.compatibility.DecoderMode
 import app.opah.tv.playback.compatibility.PlaybackCandidate
 import app.opah.tv.playback.compatibility.TransportMode
 import app.opah.tv.playback.media3.PlayerViewMedia3VideoOutputTarget
 import app.opah.tv.playback.media3.SingleLivePlaybackRequestId
+import app.opah.tv.playback.media3.DefaultMedia3PlaybackFailureClassifier
+import app.opah.tv.playback.media3.Media3PlaybackFailureEvidenceExtractor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -2286,6 +2291,16 @@ private val DECODER_PLAYBACK_ERROR_CODES = setOf(
 )
 
 internal fun safePlaybackError(error: PlaybackException, kind: PlaybackKind): String {
+    val classified = DefaultMedia3PlaybackFailureClassifier.classify(
+            Media3PlaybackFailureEvidenceExtractor.extract(error),
+        )
+    if (kind == PlaybackKind.LIVE && classified.diagnosticCode.isMissingRtspSetup) {
+        return if (classified.diagnosticCode == PlaybackDiagnosticCode.RTSP_MISSING_FMTP)
+            "The camera did not provide the setup information needed for this connection"
+        else "The camera did not provide the video setup information needed for this connection"
+    }
+    if (classified.category == FailureCategory.UNSUPPORTED_VIDEO_SIZE)
+        return "This stream is too large for the TV to play"
     val httpStatus = error.httpStatusCode()
     if (kind == PlaybackKind.RECORDED && httpStatus == 404) {
         return "This recording is no longer available. Try another activity item."

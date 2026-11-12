@@ -10,6 +10,10 @@ data class PlaybackRequest(
     val startupFallbackDetail: String? = null,
     /** Opaque process capability for compatibility-engine live playback; never a URI. */
     val liveCompatibilityRequestId: String? = null,
+    /** Discovered source for explicit session recovery; never a URL or a saved preference. */
+    val liveStreamName: String? = null,
+    /** Explicit, ephemeral HTTPS request. Normal camera clicks never set this capability. */
+    val httpsLiveRequestId: String? = null,
     val compatibilityTest: Boolean = false,
     val compatibilityTestVideoOnly: Boolean = false,
     val activityItemId: String? = null,
@@ -31,3 +35,8 @@ enum class PlaybackKind {
     LIVE,
     RECORDED,
 }
+
+/** Adapted from Goofyschooler's PR #18: a retry must create a different surface/session. */
+internal fun playbackSurfaceKey(request: PlaybackRequest): String =
+    "playback:${request.httpsLiveRequestId ?: request.liveCompatibilityRequestId ?: request.uri}:" +
+        "${request.activityItemId}:${request.compatibilityTestVideoOnly}"

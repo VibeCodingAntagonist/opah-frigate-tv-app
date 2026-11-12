@@ -994,6 +994,7 @@ enum class FailureCategory {
     VIDEO_DECODER,
     VIDEO_RENDERER,
     UNSUPPORTED_VIDEO_CODEC,
+    UNSUPPORTED_VIDEO_SIZE,
     MEDIA_SOURCE_OR_SDP,
     SOURCE_TIMEOUT,
     RTSP_TIMEOUT,
@@ -1013,6 +1014,7 @@ val FailureCategory.implicatesSavedStrategy: Boolean
         FailureCategory.VIDEO_DECODER,
         FailureCategory.VIDEO_RENDERER,
         FailureCategory.UNSUPPORTED_VIDEO_CODEC,
+        FailureCategory.UNSUPPORTED_VIDEO_SIZE,
         FailureCategory.MEDIA_SOURCE_OR_SDP,
         FailureCategory.FIRST_FRAME_TIMEOUT,
         FailureCategory.REPEATED_BUFFERING_OR_STALL,
@@ -1031,6 +1033,11 @@ enum class FailurePhase {
 enum class PlaybackDiagnosticCode {
     AUDIO_DECODER,
     VIDEO_DECODER,
+    VIDEO_SIZE_UNSUPPORTED,
+    RTSP_MISSING_FMTP,
+    RTSP_MISSING_VPS,
+    RTSP_MISSING_SPS,
+    RTSP_MISSING_PPS,
     RTSP_TIMEOUT,
     SESSION_EXPIRED,
     CAMERA_DENIED,
@@ -1048,6 +1055,12 @@ enum class PlaybackDiagnosticCode {
     AUDIO_PROGRESS_MISSING,
     RELEASE_FAILED,
 }
+
+val PlaybackDiagnosticCode.isMissingRtspSetup: Boolean
+    get() = this == PlaybackDiagnosticCode.RTSP_MISSING_FMTP ||
+        this == PlaybackDiagnosticCode.RTSP_MISSING_VPS ||
+        this == PlaybackDiagnosticCode.RTSP_MISSING_SPS ||
+        this == PlaybackDiagnosticCode.RTSP_MISSING_PPS
 
 data class ClassifiedPlaybackFailure(
     val category: FailureCategory,

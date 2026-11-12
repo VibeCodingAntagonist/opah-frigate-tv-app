@@ -7,6 +7,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.ensureActive
 import app.opah.tv.OpahApplication
 import app.opah.tv.BuildConfig
 import app.opah.tv.data.ConnectionProfileFactory
@@ -1683,6 +1684,112 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
             }
     }
 
+    fun canPlayUsingHttps(camera: Camera): Boolean {
+        val current = _state.value
+        val snapshot = current.snapshot ?: return false
+        val profile = current.activeProfile ?: return false
+        val eligible = camera.copy(streams = camera.streams.filter {
+            app.opah.tv.playback.httpLiveUri(profile.apiBaseUrl, it.streamName) != null
+        })
+        return !BuildConfig.DOCUMENTATION_MODE &&
+            app.opah.tv.playback.supportsAuthorizedHttpsLive(snapshot.frigateVersion) &&
+            app.opah.tv.playback.canOfferHttpsLive(profile.apiBaseUrl) &&
+            streamSelector.select(eligible, current.device?.codecs.orEmpty(), current.settings.streamPreference).isSuccess &&
+            camera.name in snapshot.user.allowedCameras &&
+            snapshot.cameras.any { it.name == camera.name && it.streams.any { stream ->
+                app.opah.tv.playback.httpLiveUri(profile.apiBaseUrl, stream.streamName) != null
+            } } && issuePrivacyGrant(PrivacySurface.LIVE_PLAYBACK, PrivacyTarget.Camera(camera.name)) != null
+    }
+
+    /** Explicit alternative; never sets a preference or enters the RTSP strategy store. */
+    fun playUsingHttps(camera: Camera, streamName: String? = null) {
+        val current = _state.value
+        val latest = current.snapshot?.cameras?.firstOrNull { it.name == camera.name } ?: return
+        if (!canPlayUsingHttps(latest)) return
+        val eligible = latest.copy(streams = latest.streams.filter {
+            app.opah.tv.playback.httpLiveUri(requireNotNull(current.activeProfile).apiBaseUrl, it.streamName) != null
+        })
+        val option = if (streamName != null) eligible.streams.firstOrNull { it.streamName == streamName }
+            else streamSelector.select(eligible, current.device?.codecs.orEmpty(), current.settings.streamPreference).getOrNull()?.option
+        if (option == null) return
+        _state.update { it.copy(playback = PlaybackRequest(latest.displayName, "", PlaybackKind.LIVE,
+            cameraName = latest.name, liveStreamName = option.streamName,
+            httpsLiveRequestId = java.util.UUID.randomUUID().toString(), detail = "HTTPS live video"),
+            activeCameraName = latest.name, errorMessage = null) }
+    }
+
+    internal suspend fun prepareAuthenticatedHttpLive(request: PlaybackRequest): app.opah.tv.playback.AuthenticatedHttpLive? {
+        val current = _state.value
+        if (current.playback?.httpsLiveRequestId != request.httpsLiveRequestId || request.httpsLiveRequestId == null) return null
+        val profile = current.activeProfile ?: return null
+        if (!app.opah.tv.playback.useAuthenticatedLive(request, profile.apiBaseUrl)) return null
+        val snapshot = current.snapshot ?: return null
+        val camera = snapshot.cameras.firstOrNull { it.name == request.cameraName } ?: return null
+        if (!canPlayUsingHttps(camera)) return null
+        val stream = camera.streams.firstOrNull { it.streamName == request.liveStreamName } ?: return null
+        val uri = app.opah.tv.playback.httpLiveUri(profile.apiBaseUrl, stream.streamName) ?: return null
+        val grant = issuePrivacyGrant(PrivacySurface.LIVE_PLAYBACK, PrivacyTarget.Camera(camera.name)) ?: return null
+        val lease = app.opah.tv.playback.HttpsAccessLease(localAllowed = {
+            val latest = _state.value
+            latest.activeProfile == profile && latest.playback?.httpsLiveRequestId == request.httpsLiveRequestId &&
+                container.cookieJar.hasUnexpiredSession() &&
+                revalidatePrivacyGrant(grant) && latest.snapshot?.user == snapshot.user &&
+                latest.snapshot?.cameras?.any { it.name == camera.name && it.streams.any { source -> source.streamName == stream.streamName } } == true
+        }, fetchFreshScope = {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                // Four bounded read-only requests; no password submission or redirect fallback.
+                val client = container.httpClient.newBuilder().callTimeout(2, java.util.concurrent.TimeUnit.SECONDS).build()
+                val gateway = app.opah.tv.data.network.FrigateApiClient(client, container.cookieJar)
+                try {
+                    val user = gateway.refreshSession(profile)
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    if (user != snapshot.user) {
+                        invalidateHttpsScope(profile, requireNotNull(request.httpsLiveRequestId))
+                        false
+                    } else {
+                        val config = gateway.getConfig(profile)
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        val version = gateway.getVersion(profile)
+                        val owned = app.opah.tv.playback.httpsScopeOwnsStream(config, user, camera.name, stream.streamName)
+                        if (!owned) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                            if (_state.value.activeProfile == profile && _state.value.playback?.httpsLiveRequestId == request.httpsLiveRequestId) {
+                                val cameras = app.opah.tv.data.FrigateJsonParsers().parseCameras(config, snapshot.streamMetadata, user.allowedCameras)
+                                clearImageCaches()
+                                _state.update { it.copy(snapshot = it.snapshot?.copy(cameras = cameras)) }
+                            }
+                        }
+                        owned && app.opah.tv.playback.supportsAuthorizedHttpsLive(version)
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (error: Exception) {
+                    if (error is AuthenticationExpiredException || error.toOpahFailure().httpStatus in setOf(401, 403)) {
+                        invalidateHttpsScope(profile, requireNotNull(request.httpsLiveRequestId))
+                    }
+                    false
+                }
+            }
+        }, elapsedMillis = SystemClock::elapsedRealtime)
+        if (!lease.refresh()) return null
+        return app.opah.tv.playback.AuthenticatedHttpLive(uri, lease::allowed, lease::refresh)
+    }
+
+    private suspend fun invalidateHttpsScope(profile: ConnectionProfile, requestId: String) =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+            // A late refresh for an old request must never sign out a newer profile/session.
+            if (_state.value.activeProfile == profile && _state.value.playback?.httpsLiveRequestId == requestId) {
+                finishSignedOut("Sign in again to confirm your camera access")
+                _state.update { it.copy(exports = ExportsUiState(), liveActions = LiveActionsUiState(), modes = ModesUiState(), motionReview = MotionReviewUiState()) }
+            }
+        }
+
+    fun recoverHttpsPlayback(requestId: String, streamName: String? = null, standardConnection: Boolean = false) {
+        val current = _state.value
+        val request = current.playback?.takeIf { it.httpsLiveRequestId == requestId } ?: return
+        val camera = current.snapshot?.cameras?.firstOrNull { it.name == request.cameraName } ?: return
+        if (standardConnection) playAutomatic(camera)
+        else playUsingHttps(camera, streamName ?: request.liveStreamName)
+    }
+
     fun playInstantRewind(cameraName: String) {
         val current = _state.value
         val camera = current.snapshot?.cameras?.firstOrNull { it.name == cameraName } ?: return
@@ -2165,6 +2272,22 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
         if (issuePrivacyGrant(PrivacySurface.LIVE_PLAYBACK, PrivacyTarget.Camera(camera.name)) == null) return
         val profile = _state.value.activeProfile ?: return
         playStream(profile, camera, option, "Explicit Frigate stream selection")
+    }
+
+    /** Resolve again at activation so an old recovery control cannot reuse a removed source. */
+    fun recoverLivePlayback(requestId: String, streamName: String? = null) {
+        val current = _state.value
+        val request = current.playback ?: return
+        if (request.liveCompatibilityRequestId != requestId || request.kind != PlaybackKind.LIVE) return
+        val snapshot = current.snapshot ?: return
+        val camera = snapshot.cameras.firstOrNull {
+            it.name == request.cameraName && it.name in snapshot.user.allowedCameras
+        } ?: return
+        val option = camera.streams.firstOrNull {
+            it.streamName == (streamName ?: request.liveStreamName) && it.metadata?.available != false
+        } ?: return
+        // playStream obtains a current privacy grant and prepares a new guarded session.
+        playStream(camera, option)
     }
 
     fun playBirdseye() {
@@ -5798,6 +5921,7 @@ class Phase0ViewModel(application: Application) : AndroidViewModel(application) 
                                 detail = "${option.label} • $reason",
                                 liveCompatibilityRequestId = requestId.value,
                                 compatibilityTest = compatibilityTest,
+                                liveStreamName = option.streamName,
                                 compatibilityTestVideoOnly = compatibilityTestVideoOnly,
                             ),
                             activeCameraName = camera.name,

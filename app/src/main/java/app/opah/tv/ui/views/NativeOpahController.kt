@@ -845,6 +845,9 @@ internal class NativeOpahController(
                 val camera = state.snapshot?.cameras?.firstOrNull { it.name == cameraName } ?: return
                 val favoriteIndex = state.settings.favoriteCameraNames.indexOf(cameraName)
                 val choices = buildList {
+                    if (viewModel.canPlayUsingHttps(camera)) {
+                        add(Triple("https-live", "Play using HTTPS", "Use this connection for this viewing session"))
+                    }
                     add(Triple("refresh", "Refresh preview", ""))
                     add(Triple("favorite", if (tile.favorite) "Remove favorite" else "Pin as favorite", ""))
                     if (favoriteIndex > 0) add(Triple("earlier", "Move favorite earlier", ""))
@@ -858,6 +861,7 @@ internal class NativeOpahController(
                 }
                 showChoiceDialog(camera.displayName, "Camera options", choices) { choice ->
                     when (choice) {
+                        "https-live" -> viewModel.playUsingHttps(camera)
                         "refresh" -> activeHome?.refreshPreview(tile.key)
                         "favorite" -> viewModel.toggleFavoriteCamera(cameraName)
                         "earlier" -> viewModel.moveFavoriteCamera(cameraName, -1)
@@ -3970,8 +3974,7 @@ internal class NativeOpahController(
 
     private fun showPlayback(state: Phase0UiState) {
         val request = requireNotNull(state.playback)
-        val surfaceKey = "playback:${request.liveCompatibilityRequestId ?: request.uri}:" +
-            "${request.activityItemId}:${request.compatibilityTestVideoOnly}"
+        val surfaceKey = app.opah.tv.playback.playbackSurfaceKey(request)
         val controls = playbackControls(state, request)
         val actionMessage = state.review.actionErrorFor(request.activityItemId)?.message
             ?: state.review.playbackNavigationMessage
@@ -3985,6 +3988,7 @@ internal class NativeOpahController(
             (request.activityItemId != null && state.review.savingClipItemId == request.activityItemId) ||
             (request.recordingStartTime != null && state.history.savingSlotStartTime == request.recordingStartTime)
         if (activeSurfaceKey == surfaceKey && activePlayback != null) {
+            activePlayback?.updateLiveRecoveryActions(liveRecoveryActions(state, request))
             activePlayback?.updateControls(controls, actionMessage, feedbackPending)
             return
         }
@@ -4028,7 +4032,9 @@ internal class NativeOpahController(
             initialControls = controls,
             initialActionMessage = actionMessage,
             initialFeedbackPending = feedbackPending,
-            pictureInPictureAvailable = actions.pictureInPictureAvailable && !request.compatibilityTest,
+            initialLiveRecoveryActions = liveRecoveryActions(state, request),
+            prepareHttpLive = viewModel::prepareAuthenticatedHttpLive,
+            pictureInPictureAvailable = actions.pictureInPictureAvailable && !request.compatibilityTest && request.httpsLiveRequestId == null,
             onEnterPictureInPicture = actions.onEnterPictureInPicture,
             onCompatibilityTestStatus = viewModel::reportPlaybackCompatibilityStatus,
             onClose = {
@@ -4098,6 +4104,54 @@ internal class NativeOpahController(
         activePtz = surface
         contentHost.removeAllViews()
         contentHost.addView(surface, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun liveRecoveryActions(
+        state: Phase0UiState,
+        request: app.opah.tv.playback.PlaybackRequest,
+    ): NativeLiveRecoveryActions {
+        val requestId = request.httpsLiveRequestId ?: request.liveCompatibilityRequestId ?: return NativeLiveRecoveryActions()
+        if (request.compatibilityTest) return NativeLiveRecoveryActions()
+        val options = liveRecoveryOptions(state, request)
+        val camera = state.snapshot?.cameras?.firstOrNull { it.name == request.cameraName }
+        val https = request.httpsLiveRequestId != null
+        return NativeLiveRecoveryActions(
+            retry = if (options.any { it.streamName == request.liveStreamName }) {
+                { if (https) viewModel.recoverHttpsPlayback(requestId) else viewModel.recoverLivePlayback(requestId) }
+            } else null,
+            tryHttps = if (!https && camera != null && viewModel.canPlayUsingHttps(camera)) {
+                { viewModel.playUsingHttps(camera) }
+            } else null,
+            chooseConnection = if (https && camera != null) {
+                { showChoiceDialog("Choose a connection", "Use the standard connection for this camera",
+                    listOf(Triple("standard", "Standard connection", ""))) { viewModel.recoverHttpsPlayback(requestId, standardConnection = true) } }
+            } else null,
+            chooseStream = if (options.any { it.streamName != request.liveStreamName }) {
+                { showLiveStreamRecovery(requestId) }
+            } else null,
+        )
+    }
+
+    private fun liveRecoveryOptions(state: Phase0UiState, request: app.opah.tv.playback.PlaybackRequest) =
+        state.snapshot?.cameras?.firstOrNull {
+            it.name == request.cameraName && it.name in state.snapshot.user.allowedCameras
+        }?.streams.orEmpty().filter {
+            it.metadata?.available != false && (request.httpsLiveRequestId == null ||
+                app.opah.tv.playback.httpLiveUri(state.activeProfile?.apiBaseUrl.orEmpty(), it.streamName) != null)
+        }.distinctBy { it.streamName }
+
+    private fun showLiveStreamRecovery(requestId: String) {
+        val state = viewModel.state.value
+        val request = state.playback?.takeIf { (it.httpsLiveRequestId ?: it.liveCompatibilityRequestId) == requestId } ?: return
+        val options = liveRecoveryOptions(state, request).filter { it.streamName != request.liveStreamName }
+        if (options.isEmpty()) return
+        showChoiceDialog("Choose another stream", "Use a different configured stream for this viewing session",
+            options.map { Triple(it.streamName, it.label, "") },
+        ) { name ->
+            if (request.httpsLiveRequestId != null) {
+                viewModel.recoverHttpsPlayback(requestId, name)
+            } else viewModel.recoverLivePlayback(requestId, name)
+        }
     }
 
     private fun playbackControls(state: Phase0UiState, request: app.opah.tv.playback.PlaybackRequest): List<NativePlaybackControl> {

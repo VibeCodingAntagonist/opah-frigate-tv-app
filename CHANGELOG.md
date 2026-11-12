@@ -2,6 +2,27 @@
 
 This page lists the user-visible changes in each Opah release.
 
+## 0.7.2
+
+- Hold **OK** on a camera and choose **Play using HTTPS** for an optional live
+  connection through your secure Frigate address. This choice applies only to
+  that viewing session and requires Frigate 0.18.2 or a compatible later 0.18
+  release.
+- Show a clearer explanation when a camera omits setup information needed for
+  live playback, with another stream or HTTPS offered when available.
+- Check the TV's reported video-size limits more carefully and offer another
+  configured stream when the current one is too large to play.
+
+Camera permissions, PIN protection, guest mode, and normal certificate checks
+continue to apply. HTTPS does not reduce the camera's resolution or remove the
+TV's video-format limits.
+
+Thanks to [Goofyschooler](https://github.com/Goofyschooler) for the HTTPS work
+adapted from [PR #18](https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/pull/18),
+and to [megabitus98](https://github.com/megabitus98) for the detailed reports in
+[#21](https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/issues/21) and
+[#22](https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/issues/22).
+
 ## 0.7.1
 
 - Keep Frigate TV alerts and automatic Monitor activity updates available

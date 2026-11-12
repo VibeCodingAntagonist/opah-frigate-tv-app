@@ -45,7 +45,7 @@ Home Assistant is optional. You can connect it separately to receive messages
 from your home automations, even before setting up Frigate.
 
 Opah supports Frigate 0.17.2 and the Frigate 0.18 API. Frigate 0.18.2
-(`cfa08c5`) is the latest tested 0.18 build for Opah 0.7.1. Other compatible
+(`cfa08c5`) is the latest tested 0.18 build. Other compatible
 0.18 builds can connect without an exact build-name match, but are not all
 individually tested. See the [compatibility guide](docs/compatibility.md) for
 tested features, camera video formats, devices, and troubleshooting tips.
@@ -133,6 +133,13 @@ and press **OK** to watch it live. The headings stay visible while you scroll.
 Preview age and failure messages help distinguish an older picture from a
 working camera. Hold **OK** on a camera and choose **Refresh preview** to
 check its picture again.
+
+For an optional way to watch one live camera, hold **OK** on its tile and choose
+**Play using HTTPS**. It uses your secure Frigate connection for that viewing
+session. It requires an authenticated HTTPS address the TV can verify and
+Frigate 0.18.2 or a compatible later 0.18 release. Ordinary **OK** keeps using
+the standard live connection. See [HTTPS live video](docs/compatibility.md#optional-https-live-video)
+for requirements and controls.
 
 Press and hold **OK** on a camera or view to pin it as a
 favorite, move a favorite earlier or later, or hide a camera from the grid.
@@ -353,6 +360,12 @@ Developers who want to build or improve Opah should start with
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
+
+Thanks to [Goofyschooler](https://github.com/Goofyschooler) for the optional HTTPS
+live-playback work adapted from [PR #18](https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/pull/18),
+and to [megabitus98](https://github.com/megabitus98) for the detailed camera
+playback reports in [#21](https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/issues/21)
+and [#22](https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/issues/22).
 
 Opah is available under the [Apache License 2.0](LICENSE). Release history is in
 [CHANGELOG.md](CHANGELOG.md).

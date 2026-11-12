@@ -213,6 +213,14 @@ class PlaybackCandidatePlanner {
             .withIndex()
             .asSequence()
             .filter { it.value.key() !in attempted }
+            // Size admission checked every eligible decoder. Missing SDP setup fails before
+            // decoding. Neither can be repaired by cycling through the same source's variants.
+            .filter { indexed ->
+                (failure.category != FailureCategory.UNSUPPORTED_VIDEO_SIZE &&
+                    !failure.diagnosticCode.isMissingRtspSetup) || attempted.none {
+                    it.routeId == indexed.value.routeId && it.streamId == indexed.value.streamId
+                }
+            }
             .mapNotNull { indexed ->
                 relevanceScore(current, indexed.value, failure.category)
                     ?.let { score -> RankedCandidate(indexed.value, score, indexed.index) }
@@ -302,6 +310,14 @@ class PlaybackCandidatePlanner {
             FailureCategory.UNSUPPORTED_VIDEO_CODEC -> when {
                 !sameSource && candidate.media.videoCodec != current.media.videoCodec -> 0
                 else -> null
+            }
+
+            FailureCategory.UNSUPPORTED_VIDEO_SIZE -> when {
+                sameSource -> null
+                candidate.pixelCount() < current.pixelCount() -> 0
+                // A narrower source can fit even if its total pixel count is larger. Unknown
+                // metadata may also be tried; actual format admission remains authoritative.
+                else -> 1
             }
 
             FailureCategory.SOURCE_TIMEOUT,
