@@ -427,6 +427,7 @@ class AppContainer(context: Context) {
             identityFactory = compatibilityIdentityFactory,
             strategyStore = verifiedPlaybackStrategyStore,
             persistence = playbackStrategyPersistenceCoordinator,
+            authenticatedClient = httpClient,
         )
     }
     internal val singleLivePlaybackCoordinator: SingleLivePlaybackCoordinator

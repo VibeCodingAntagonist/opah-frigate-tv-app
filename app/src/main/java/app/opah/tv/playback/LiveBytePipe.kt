@@ -70,8 +70,20 @@ internal class LiveBytePipe(private val capacity: Int = 8 * 1024 * 1024) {
     }
 }
 
-internal class LiveTransportException(val httpStatus: Int? = null) :
+internal class LiveTransportException(val httpStatus: Int? = null, val policyRejected: Boolean = false) :
     IOException("Live connection rejected")
+
+/** Typed, bounded security evidence; discard the original exception and its private message. */
+internal fun isLiveConnectionPolicyFailure(error: Throwable): Boolean {
+    var current: Throwable? = error
+    repeat(12) {
+        val item = current ?: return false
+        if (item is javax.net.ssl.SSLException || item is LocalLiveUnavailableException ||
+            (item is LiveTransportException && (item.policyRejected || item.httpStatus in 300..399))) return true
+        current = item.cause
+    }
+    return false
+}
 
 /** Never display exception messages, response bodies, headers or private URLs. */
 internal fun liveFailureStatus(error: Throwable): String? {

@@ -281,6 +281,7 @@ class KnownPlaybackSource(
     preferredTransport: TransportMode? = null,
     supportedDecoders: List<DecoderMode> = listOf(DecoderMode.PLATFORM_DEFAULT),
     val available: Boolean = true,
+    val automaticAlternativeAllowed: Boolean = false,
 ) {
     val supportedTransports: List<TransportMode> = frozenList(supportedTransports)
     val preferredTransport: TransportMode = preferredTransport ?: this.supportedTransports.firstOrNull()
@@ -312,6 +313,7 @@ class KnownPlaybackSource(
         preferredTransport = preferredTransport,
         supportedDecoders = supportedDecoders,
         available = available,
+        automaticAlternativeAllowed = automaticAlternativeAllowed,
     )
 }
 
@@ -507,6 +509,8 @@ class PlaybackExecutionAuthorizer {
                 when {
                     source == null -> PlaybackExecutionAuthorization.RESOLUTION_UNAVAILABLE
                     !source.available -> PlaybackExecutionAuthorization.RESOLUTION_UNAVAILABLE
+                    candidate.alternativeConnection && !source.automaticAlternativeAllowed ->
+                        PlaybackExecutionAuthorization.STALE_ACCESS
                     source.persistenceScope != candidate.sourceScope ||
                         source.media != candidate.media ||
                         candidate.transportMode !in source.supportedTransports ||
@@ -543,6 +547,7 @@ data class PlaybackCandidate(
     val decoderMode: DecoderMode,
     val origin: CandidateOrigin,
     val knownGoodRecordGeneration: Long? = null,
+    val alternativeConnection: Boolean = false,
 ) {
     init {
         require(audioMode != AudioMode.WITH_AUDIO || media.audioCodec != null) {
@@ -562,6 +567,7 @@ data class PlaybackCandidate(
         audioMode = audioMode,
         transportMode = transportMode,
         decoderMode = decoderMode,
+        alternativeConnection = alternativeConnection,
     )
 }
 
@@ -571,6 +577,7 @@ data class PlaybackCandidateKey(
     val audioMode: AudioMode,
     val transportMode: TransportMode,
     val decoderMode: DecoderMode,
+    val alternativeConnection: Boolean = false,
 )
 
 data class PlaybackSuccessEvidence(
@@ -623,6 +630,8 @@ data class PersistablePlaybackStrategy(
 
     companion object {
         fun fromVerified(strategy: VerifiedPlaybackStrategy): PersistablePlaybackStrategy =
+            strategy.let {
+            require(!it.candidate.alternativeConnection) { "Session-only connections cannot be saved as RTSP strategies" }
             PersistablePlaybackStrategy(
                 identity = strategy.identity,
                 sourceScope = strategy.candidate.sourceScope,
@@ -632,6 +641,7 @@ data class PersistablePlaybackStrategy(
                 decoderMode = strategy.candidate.decoderMode,
                 evidence = strategy.evidence,
             )
+            }
     }
 }
 
@@ -898,6 +908,7 @@ class PlaybackPlan private constructor(
     val snapshotRouteId: SnapshotRouteId?,
     val budget: PlaybackAttemptBudget,
     val resourcePolicy: PlaybackResourcePolicy,
+    val automaticAlternativeSources: Set<CompatibilityIdentityKey>,
     val modelVersion: Int = PLAYBACK_COMPATIBILITY_MODEL_VERSION,
 ) {
     val candidates: List<PlaybackCandidate> = frozenList(candidates)
@@ -957,6 +968,8 @@ class PlaybackPlan private constructor(
                 snapshotRouteId = snapshotRouteId,
                 budget = budget,
                 resourcePolicy = resourcePolicy,
+                automaticAlternativeSources = Collections.unmodifiableSet(authorizedSources
+                    .filter { it.automaticAlternativeAllowed && it.available }.map { it.persistenceScope }.toSet()),
             )
         }
     }
@@ -1054,6 +1067,8 @@ enum class PlaybackDiagnosticCode {
     VIDEO_PROGRESS_STALLED,
     AUDIO_PROGRESS_MISSING,
     RELEASE_FAILED,
+    CONNECTION_POLICY_REJECTED,
+    AUTOMATIC_RECOVERY_DISABLED,
 }
 
 val PlaybackDiagnosticCode.isMissingRtspSetup: Boolean
@@ -1071,7 +1086,9 @@ data class ClassifiedPlaybackFailure(
 
     val stopsFallback: Boolean
         get() = category == FailureCategory.AUTHENTICATION ||
-            category == FailureCategory.AUTHORIZATION
+            category == FailureCategory.AUTHORIZATION ||
+            diagnosticCode == PlaybackDiagnosticCode.CONNECTION_POLICY_REJECTED ||
+            diagnosticCode == PlaybackDiagnosticCode.AUTOMATIC_RECOVERY_DISABLED
 
     val implicatesKnownStrategy: Boolean
         get() = category.implicatesSavedStrategy
@@ -1189,6 +1206,7 @@ sealed interface PlaybackResult {
 }
 
 enum class PersistenceFailureReason {
+    SESSION_ONLY_CONNECTION,
     WRITE_FAILED,
     TIMED_OUT,
     CANCELLED_BEFORE_COMMIT,

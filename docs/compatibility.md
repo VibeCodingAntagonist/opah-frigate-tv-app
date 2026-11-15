@@ -14,7 +14,7 @@ try when a camera does not play.
 | Main test device | 2024 onn. 4K Pro with Android 14 |
 | H.264 camera video | Tested |
 | H.265 camera video | Tested on a TV that supports H.265 |
-| Optional HTTPS live video | Single-camera playback through authenticated Frigate 0.18.2 checked on the main TV; see requirements below |
+| Another live connection | Authenticated HTTPS checked with Frigate 0.18.2; trusted-local playback, automatic recovery, privacy and cancellation checked with fictional servers on the ONN; the reporter's Philips setup still needs a retest |
 | Birdseye | Tested |
 | Activity recordings | Browsing, filtering, reviewed status, seeking, saving, and playback tested |
 | Clips | Preview pictures, playback, navigation, rename, share, and administrator deletion have automated local coverage |
@@ -65,10 +65,10 @@ If a camera stays on **Preparing** or does not start:
    may call this the keyframe or I-frame interval.
 6. Try H.264 to determine whether the problem is specific to H.265 support.
 
-In Opah 0.7.2, a message that a camera did not provide setup information means
+A message that a camera did not provide setup information means
 the current live connection needs details the camera left out. It does not
 necessarily mean the video itself is broken. Choose another configured stream,
-or **Try HTTPS** when offered. An audio setting cannot supply missing video
+or **Try another connection** when offered. An audio setting cannot supply missing video
 setup information.
 
 Opah also checks the TV's reported video-size limits. A stream can be too wide
@@ -79,31 +79,39 @@ confirm its limits, playback can still fail. Try a smaller stream already set
 up in Frigate; Opah does not resize the camera video or create a new stream.
 
 The oversized H.265 picture problem reported on the Philips 58PUS8505/12 has
-not yet been retested on that device with Opah 0.7.2. Checks on the onn. 4K Pro
+not yet been retested on that device with Opah 0.7.3. Checks on the onn. 4K Pro
 do not establish that every TV will display every supported format correctly.
 
-## Optional HTTPS live video
+<a id="optional-https-live-video"></a>
 
-Opah 0.7.2 adds a separate way to watch one live camera through your secure
-Frigate address. It can help when the standard live connection cannot reach
-the camera or needs setup information the camera does not provide.
+## Another live connection
 
-You need an authenticated `https://` Frigate connection whose certificate and
-address the TV can verify, Frigate 0.18.2 or a compatible later stable 0.18
-release, and an existing camera stream available to your account. This option
-is not enabled for Frigate 0.17.2, earlier 0.18 versions, prereleases, or direct
-unauthenticated port `5000` connections. Later 0.18 releases are not all
-individually tested. A reverse proxy must pass Frigate's live-video WebSocket
-connection as well as its web pages.
+Opah can watch one live camera through the Frigate server address you already
+configured. This can help when the usual live connection needs video setup
+details that a camera leaves out.
+
+You need Frigate 0.18.2 or a compatible later stable 0.18 release and an
+existing configured camera stream. Later releases are not all individually
+tested. This option is unavailable on Frigate 0.17.2, earlier 0.18 releases,
+and prereleases.
+
+The recommended connection is authenticated `https://`, with a certificate and
+address the TV can verify. A reverse proxy must also pass Frigate's live-video
+WebSocket connection. An existing no-login connection on a trusted private
+network can use the other connection on HTTP port `5000`. This local path is
+unencrypted and does not use account camera restrictions. Opah checks that its
+destination stays private; an address ending in `.local` alone is not enough.
+Do not expose port `5000` to the internet or switch to it to avoid a sign-in or
+certificate error.
 
 1. On **Cameras**, hold **OK** on a camera tile.
-2. Choose **Play using HTTPS** when it is available.
+2. Choose **Play using another connection** when it is available.
 
 The choice lasts for this viewing session. Ordinary **OK**, startup cameras,
 saved camera views, Monitor, and recordings keep their existing connections.
-HTTPS live video is for one camera in Opah and does not offer picture-in-picture.
+The other connection is for one camera in Opah and does not offer picture-in-picture.
 
-Press the center button to reveal hidden controls. **Back** leaves HTTPS live
+Press the center button to reveal hidden controls. **Back** leaves this live
 video immediately, even if its controls are visible; an open choice dialog
 closes first. **Home** stops the live connection. Returning to Opah starts a
 fresh connection to the same selected stream only after access is checked
@@ -111,15 +119,35 @@ again. After leaving playback, ordinary **OK** opens the standard connection.
 
 If playback fails, use **Try again**, choose another stream, or choose the
 standard connection when those actions are available. Opah does not switch
-connections or streams automatically during an HTTPS session. Certificate
+connections or streams automatically during a manually chosen session. Certificate
 errors and redirects stop the connection rather than weakening its security.
 Opening the Frigate web page successfully does not by itself prove that its
-HTTPS live-video route is available.
+other live-video route is available.
 
-HTTPS still uses the TV's video decoder. It does not lower the resolution,
+The other connection still uses the TV's video decoder. It does not lower the resolution,
 convert H.265 to H.264, repair all camera-format problems, or change Frigate's
-configuration. Camera permissions, PIN protection, and guest restrictions
-continue to apply.
+configuration. Authenticated connections retain account camera permissions.
+Local PIN and private-camera rules apply to both connection types.
+
+### Optional automatic recovery
+
+Open **Settings** > **Cameras and Playback** and enable **Try another connection
+automatically** if you want this behavior for your saved server. It is off by
+default and resets when you change the saved server connection.
+
+When a camera leaves out required video setup details, Opah tries the same
+stream another way before using an available smaller stream. It keeps a stream
+you explicitly selected. A working smaller stream can stay in use; this setting
+does not force a return to the largest picture.
+
+This setting does not change Monitor, camera groups, recordings, or notification
+previews. Turning it off stops an automatic attempt. Access, privacy, trust,
+or certificate failures stop recovery instead of trying around those checks.
+
+With Automatic quality, a fresh **Play using another connection** session uses
+the camera's matching stream name or configured order, without favoring a Main
+label. This does not prove that a stream is the original picture. Deliberate
+**Best quality** and **Low bandwidth** choices still apply.
 
 ## Camera previews and connection problems
 
@@ -238,8 +266,8 @@ In a typical setup, Opah connects to:
 - the Frigate web service, usually on port 8971; and
 - Frigate's live-video service, usually on port 8554.
 
-The optional **Play using HTTPS** session uses the configured secure Frigate
-address instead of that separate live-video connection.
+The optional **Play using another connection** session uses the configured
+Frigate address instead of that separate live-video connection.
 
 Most users do not need to enter the second address separately. Advanced
 connection settings are available when the secure Frigate web address and the
@@ -264,7 +292,8 @@ Please include:
 - the camera video format and resolution;
 - whether **Check camera compatibility**, **Reliable video only**, or the
   lower-resolution stream works; and
-- whether **Play using HTTPS** is offered and, if tried, whether it works.
+- whether **Play using another connection** is offered and, if tried, whether it
+  works; and whether automatic recovery is on.
 
 Do not post your password, server address, camera names or images, Frigate
 configuration, or unedited logs. See [Contributing to Opah](../CONTRIBUTING.md)

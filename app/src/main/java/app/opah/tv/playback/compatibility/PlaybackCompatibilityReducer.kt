@@ -1305,7 +1305,7 @@ class PlaybackCompatibilityReducer(
             plan = run.plan,
             current = current,
             failure = failure,
-            attempted = emptySet(),
+            attempted = if (current.alternativeConnection) setOf(current.key()) else emptySet(),
         ) ?: current.takeIf { failure.allowsBoundedSameCandidateRestart }
         return candidate?.let { AfterRelease.Recover(it, failure) }
             ?: AfterRelease.Finish(
@@ -1541,6 +1541,11 @@ class PlaybackCompatibilityReducer(
         val run = state.run.accept(atMillis)
         val persistenceDeadline = safeAdd(atMillis, run.plan.budget.persistenceTimeoutMillis)
         val attempt = state.attempt.copy(phase = AttemptPhase.VERIFIED)
+        if (attempt.candidate.alternativeConnection) return PlaybackTransition(
+            PlaybackCompatibilityState.UnpersistedLive(run, attempt, strategy,
+                PlaybackResult.UnpersistedLive(attempt.candidate, PersistenceFailureReason.SESSION_ONLY_CONNECTION,
+                    run.attemptsStarted)),
+        )
         return PlaybackTransition(
             state = PlaybackCompatibilityState.Persisting(
                 run = run,

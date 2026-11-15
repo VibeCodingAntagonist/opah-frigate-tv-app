@@ -209,10 +209,19 @@ class PlaybackCandidatePlanner {
     ): PlaybackCandidate? {
         if (failure.stopsFallback) return null
 
+        // megabitus98's issue #21 follow-up: keep the exact source and existing cycle budget.
+        if (!current.alternativeConnection && failure.category == FailureCategory.MEDIA_SOURCE_OR_SDP &&
+            failure.diagnosticCode.isMissingRtspSetup && current.sourceScope in plan.automaticAlternativeSources &&
+            attempted.none { it.alternativeConnection && it.routeId == current.routeId && it.streamId == current.streamId }
+        ) return current.copy(alternativeConnection = true, origin = CandidateOrigin.SAFE_FALLBACK,
+            knownGoodRecordGeneration = null)
+
         return plan.candidates
             .withIndex()
             .asSequence()
             .filter { it.value.key() !in attempted }
+            .filter { indexed -> attempted.none { it.alternativeConnection &&
+                it.routeId == indexed.value.routeId && it.streamId == indexed.value.streamId } }
             // Size admission checked every eligible decoder. Missing SDP setup fails before
             // decoding. Neither can be repaired by cycling through the same source's variants.
             .filter { indexed ->

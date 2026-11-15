@@ -135,10 +135,15 @@ working camera. Hold **OK** on a camera and choose **Refresh preview** to
 check its picture again.
 
 For an optional way to watch one live camera, hold **OK** on its tile and choose
-**Play using HTTPS**. It uses your secure Frigate connection for that viewing
-session. It requires an authenticated HTTPS address the TV can verify and
-Frigate 0.18.2 or a compatible later 0.18 release. Ordinary **OK** keeps using
-the standard live connection. See [HTTPS live video](docs/compatibility.md#optional-https-live-video)
+**Play using another connection**. It uses the server you already configured
+for that viewing session. This needs Frigate 0.18.2 or a compatible later
+stable 0.18 release and a supported secure or trusted-local connection.
+
+In **Settings** > **Cameras and Playback**, you can enable **Try another
+connection automatically** for your saved server. It starts off. When a
+camera leaves out required video setup details, Opah can try the same stream
+another way before using a smaller stream. A working smaller stream can stay
+in use. See [live connection choices](docs/compatibility.md#another-live-connection)
 for requirements and controls.
 
 Press and hold **OK** on a camera or view to pin it as a
@@ -363,7 +368,8 @@ Developers who want to build or improve Opah should start with
 
 Thanks to [Goofyschooler](https://github.com/Goofyschooler) for the optional HTTPS
 live-playback work adapted from [PR #18](https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/pull/18),
-and to [megabitus98](https://github.com/megabitus98) for the detailed camera
+and to [megabitus98](https://github.com/megabitus98) for the trusted-local
+connection patch, stream-selection report, Philips testing, and detailed camera
 playback reports in [#21](https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/issues/21)
 and [#22](https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/issues/22).
 

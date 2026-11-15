@@ -12,8 +12,10 @@ import okhttp3.OkHttpClient
 
 /** Authenticated WebSocket fMP4 bytes, with terminal cancellation before decoder release. */
 @UnstableApi
-internal class MseLiveDataSource(client: OkHttpClient, hevcSupported: Boolean, authorized: () -> Boolean = { true }) : BaseDataSource(true) {
-    private val connection = MseLiveConnection(hevcSupported, authorized, client::newWebSocket)
+internal class MseLiveDataSource(client: OkHttpClient, hevcSupported: Boolean, authorized: () -> Boolean = { true },
+    acceptsUri: (okhttp3.HttpUrl) -> Boolean = { it.scheme == "https" },
+) : BaseDataSource(true) {
+    private val connection = MseLiveConnection(hevcSupported, authorized, acceptsUri, client::newWebSocket)
     private var uri: Uri? = null
     private var opened = false
 

@@ -9,7 +9,7 @@ You need:
 
 - an Android TV or Google TV running Android 7.0 or newer;
 - a Frigate server, Home Assistant server, or both that the TV can reach;
-- a Frigate username and password if you want to connect to Frigate; and
+- a username and password for an authenticated Frigate connection; and
 - a way to send the downloaded APK to the TV, such as a USB drive or a trusted
   file-transfer app.
 
@@ -21,7 +21,7 @@ This link always downloads `opah-latest.apk` from the newest published release.
 You can also open the project's [GitHub Releases page](https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/releases),
 choose the newest release, and download the versioned file named like
 `opah-vX.Y.Z.apk`. The letters stand for the release version; for example,
-version 0.7.0 is named `opah-v0.7.0.apk`. Both APK names in that release contain
+version 0.7.3 is named `opah-v0.7.3.apk`. Both APK names in that release contain
 the same app.
 
 Do not download Opah from an unofficial mirror or APK website.
@@ -87,12 +87,15 @@ are hidden to leave the view. Press the center button to reveal the controls,
 then press it again to activate the focused control.
 
 For an optional single-camera connection, hold **OK** on its tile and choose
-**Play using HTTPS** when available. It requires authenticated HTTPS and
-Frigate 0.18.2 or a compatible later stable 0.18 release. It applies only to that
-viewing session. In this view, **Back** leaves immediately, closing an open
-choice dialog first; **Home** stops the connection. See the
-[compatibility guide](compatibility.md#optional-https-live-video) for full
-requirements and troubleshooting.
+**Play using another connection** when available. It uses your saved server
+for that viewing session and requires Frigate 0.18.2 or a compatible later
+stable 0.18 release. In this view, **Back** leaves immediately, closing an open
+choice dialog first; **Home** stops the connection.
+
+To make this automatic for supported camera setup problems, open **Settings**
+> **Cameras and Playback** > **Try another connection automatically**. It starts
+off. See the [compatibility guide](compatibility.md#another-live-connection)
+for the supported secure and trusted-local connections and their limits.
 
 Choose **New view** on Cameras to save two to four cameras together. In
 **Settings** > **Appearance**, choose a theme or turn on **High contrast**,

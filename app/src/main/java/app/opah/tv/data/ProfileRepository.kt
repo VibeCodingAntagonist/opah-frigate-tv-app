@@ -1,6 +1,8 @@
 package app.opah.tv.data
 
 import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -17,10 +19,31 @@ interface ConnectionProfileStore {
     suspend fun clear()
 }
 
-class ProfileRepository(private val context: Context) : ConnectionProfileStore {
-    internal val hasSavedProfile = context.connectionDataStore.data.map { it[API_URL] != null && it[USERNAME] != null }
+class ProfileRepository internal constructor(private val store: DataStore<Preferences>) : ConnectionProfileStore {
+    constructor(context: Context) : this(context.connectionDataStore)
+
+    val automaticLiveRecovery = store.data.map { preferences ->
+        val profile = preferences[API_URL]?.let { url -> preferences[USERNAME]?.let { username ->
+            ConnectionProfile(url, username, preferences[RTSP_HOST], preferences[RTSP_PORT] ?: 8554)
+        } }
+        AutomaticLiveRecoveryPreference(preferences[AUTOMATIC_RECOVERY_BINDING]
+            ?.takeIf { it == profile?.let(::automaticLiveRecoveryBinding) })
+    }
+
+    suspend fun setAutomaticLiveRecovery(profile: ConnectionProfile, enabled: Boolean) {
+        val binding = automaticLiveRecoveryBinding(profile) ?: return
+        store.edit { preferences ->
+            val saved = preferences[API_URL]?.let { url -> preferences[USERNAME]?.let { username ->
+                ConnectionProfile(url, username, preferences[RTSP_HOST], preferences[RTSP_PORT] ?: 8554)
+            } }
+            if (saved?.let(::automaticLiveRecoveryBinding) != binding) return@edit
+            if (enabled) preferences[AUTOMATIC_RECOVERY_BINDING] = binding
+            else preferences.remove(AUTOMATIC_RECOVERY_BINDING)
+        }
+    }
+    internal val hasSavedProfile = store.data.map { it[API_URL] != null && it[USERNAME] != null }
     override suspend fun load(): ConnectionProfile? {
-        val preferences = context.connectionDataStore.data.first()
+        val preferences = store.data.first()
         val url = preferences[API_URL] ?: return null
         val username = preferences[USERNAME] ?: return null
         return ConnectionProfile(
@@ -32,7 +55,13 @@ class ProfileRepository(private val context: Context) : ConnectionProfileStore {
     }
 
     override suspend fun save(profile: ConnectionProfile) {
-        context.connectionDataStore.edit { preferences ->
+        store.edit { preferences ->
+            val old = preferences[API_URL]?.let { url -> preferences[USERNAME]?.let { username ->
+                ConnectionProfile(url, username, preferences[RTSP_HOST], preferences[RTSP_PORT] ?: 8554)
+            } }
+            if (old?.let(::automaticLiveRecoveryBinding) != automaticLiveRecoveryBinding(profile)) {
+                preferences.remove(AUTOMATIC_RECOVERY_BINDING)
+            }
             preferences[API_URL] = profile.apiBaseUrl
             preferences[USERNAME] = profile.username
             profile.rtspHostOverride?.let { preferences[RTSP_HOST] = it }
@@ -42,7 +71,7 @@ class ProfileRepository(private val context: Context) : ConnectionProfileStore {
     }
 
     override suspend fun clear() {
-        context.connectionDataStore.edit { it.clear() }
+        store.edit { it.clear() }
     }
 
     private companion object {
@@ -50,5 +79,6 @@ class ProfileRepository(private val context: Context) : ConnectionProfileStore {
         val USERNAME = stringPreferencesKey("username")
         val RTSP_HOST = stringPreferencesKey("rtsp_host_override")
         val RTSP_PORT = intPreferencesKey("rtsp_port")
+        val AUTOMATIC_RECOVERY_BINDING = stringPreferencesKey("automatic_live_recovery_binding")
     }
 }

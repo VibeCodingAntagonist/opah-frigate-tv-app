@@ -49,6 +49,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import app.opah.tv.playback.AuthenticatedHttpLive
+import okhttp3.HttpUrl.Companion.toHttpUrl
 
 /**
  * A route capability redeemed inside the backend. The raw URI never has a public or internal
@@ -146,6 +152,9 @@ internal class Media3PlaybackAttemptBackend(
         ProcessMedia3SnapshotOwnership.registry,
     private val videoOutputs: Media3VideoOutputRegistry =
         ProcessMedia3VideoOutputRegistry.instance,
+    private val authenticatedClient: okhttp3.OkHttpClient = okhttp3.OkHttpClient(),
+    private val automaticAlternativeEnabled: () -> Boolean = { false },
+    private val prepareAlternative: suspend (AuthorizedPlaybackAttempt) -> AuthenticatedHttpLive? = { null },
 ) : PlaybackAttemptBackend {
     private val applicationContext = context.applicationContext
     private val decoderEvidenceMapper = AndroidMedia3DecoderEvidenceMapper.inspectCurrentDevice()
@@ -186,9 +195,25 @@ internal class Media3PlaybackAttemptBackend(
         }
 
         var representedHandle: PlaybackAttemptHandleToken? = null
+        var alternative: AuthenticatedHttpLive? = null
+        var alternativeTransferred = false
         try {
-            val redemption = tokenRedeemer.redeem(request.resolvedToken)
-            val route = when (redemption) {
+            val route = if (request.attempt.candidate.alternativeConnection) {
+                if (!automaticAlternativeEnabled()) {
+                    videoOutputs.release(outputAttachment); ownership.abandon(reservation)
+                    return PlaybackBackendStartOutcome.Failed(AUTOMATIC_RECOVERY_DISABLED)
+                }
+                alternative = prepareAutomaticAlternative(request)
+                if (!automaticAlternativeEnabled()) {
+                    videoOutputs.release(outputAttachment); ownership.abandon(reservation)
+                    return PlaybackBackendStartOutcome.Failed(AUTOMATIC_RECOVERY_DISABLED)
+                }
+                if (alternative?.isAuthorized?.invoke() != true) {
+                    videoOutputs.release(outputAttachment); ownership.abandon(reservation)
+                    return PlaybackBackendStartOutcome.AccessLost(PlaybackExecutionAuthorization.STALE_ACCESS)
+                }
+                null
+            } else when (val redemption = tokenRedeemer.redeem(request.resolvedToken)) {
                 is TrustedRtspTokenRedemption.Resolved -> redemption.route
                 is TrustedRtspTokenRedemption.AccessLost -> {
                     videoOutputs.release(outputAttachment)
@@ -206,6 +231,8 @@ internal class Media3PlaybackAttemptBackend(
                     reservation = reservation,
                     outputAttachment = outputAttachment,
                     onOwnershipRepresented = { representedHandle = it },
+                    alternative = alternative,
+                    onAlternativeTransferred = { alternativeTransferred = true },
                 )
             }
 
@@ -244,7 +271,13 @@ internal class Media3PlaybackAttemptBackend(
                 ownership.abandon(reservation)
             }
             if (error is Error && error !is OutOfMemoryError) throw error
-            return PlaybackBackendStartOutcome.Failed(error.toSanitizedStartFailure())
+            return PlaybackBackendStartOutcome.Failed(when {
+                error is AutomaticRecoveryDisabledException -> AUTOMATIC_RECOVERY_DISABLED
+                request.attempt.candidate.alternativeConnection && app.opah.tv.playback.isLiveConnectionPolicyFailure(error) -> ALTERNATIVE_POLICY_REJECTED
+                else -> error.toSanitizedStartFailure()
+            })
+        } finally {
+            if (!alternativeTransferred) alternative?.close()
         }
     }
 
@@ -258,6 +291,23 @@ internal class Media3PlaybackAttemptBackend(
         @Suppress("UNUSED_VARIABLE")
         val ignoredHints = handle to force
         return releaseOwnedAttempt(attemptId, awaitExistingRelease = true)
+    }
+
+    private suspend fun prepareAutomaticAlternative(request: AuthorizedPlaybackAttempt): AuthenticatedHttpLive? {
+        var ticket: AuthenticatedHttpLive? = null
+        try {
+            return coroutineScope {
+                val watch = launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                    while (automaticAlternativeEnabled()) delay(250L)
+                    throw AutomaticRecoveryDisabledException()
+                }
+                try { prepareAlternative(request).also { ticket = it } }
+                finally { watch.cancel() }
+            }
+        } catch (error: Throwable) {
+            ticket?.close()
+            throw error
+        }
     }
 
     override suspend fun renderSnapshot(
@@ -340,11 +390,13 @@ internal class Media3PlaybackAttemptBackend(
 
     private fun buildAndStartOnMain(
         request: AuthorizedPlaybackAttempt,
-        route: PrevalidatedRtspUri,
+        route: PrevalidatedRtspUri?,
         events: PlaybackAttemptEventSink,
         reservation: Media3AttemptReservation,
         outputAttachment: Media3VideoOutputAttachment,
         onOwnershipRepresented: (PlaybackAttemptHandleToken) -> Unit,
+        alternative: AuthenticatedHttpLive?,
+        onAlternativeTransferred: () -> Unit,
     ): Media3SetupResult {
         val handle = PlaybackAttemptHandleToken.fromTrustedBackend(UUID.randomUUID().toString())
         val candidate = request.attempt.candidate
@@ -376,10 +428,15 @@ internal class Media3PlaybackAttemptBackend(
             softwareDecoderPermitted = request.resourcePolicy.softwareDecoderPermitted,
             progressEvidence = progressEvidence,
         )
+        if (alternative != null) renderersFactory.forceDisableMediaCodecAsynchronousQueueing()
 
         var owned: OwnedMedia3Attempt? = null
         try {
-            val player = ExoPlayer.Builder(applicationContext, renderersFactory).build()
+            val mse = alternative?.let { AutomaticMseResources(applicationContext, it, authenticatedClient,
+                automaticAlternativeEnabled) }
+            val builder = ExoPlayer.Builder(applicationContext, renderersFactory)
+            if (mse != null) builder.setMediaSourceFactory(mse.mediaSourceFactory)
+            val player = builder.build()
             val created = OwnedMedia3Attempt(
                 attemptId = request.attempt.id,
                 player = player,
@@ -392,8 +449,10 @@ internal class Media3PlaybackAttemptBackend(
                     outputGeneration = outputAttachment.generation,
                     progressEvidence = progressEvidence,
                 ),
+                alternative = mse,
             )
             owned = created
+            if (mse != null) onAlternativeTransferred()
             installListeners(created)
             check(
                 progressEvidence.attachVideoOutput(
@@ -411,7 +470,8 @@ internal class Media3PlaybackAttemptBackend(
                     candidate.audioMode == AudioMode.VIDEO_ONLY,
                 )
                 .build()
-            route.installOnPlayer(
+            if (alternative != null) player.setMediaItem(MediaItem.Builder().setUri(alternative.uri).setMimeType("video/mp4").build())
+            else requireNotNull(route).installOnPlayer(
                 player = player,
                 forceRtpTcp = candidate.transportMode == TransportMode.FORCE_RTP_TCP,
                 timeoutMillis = MEDIA3_RTSP_TIMEOUT_MILLIS,
@@ -422,6 +482,7 @@ internal class Media3PlaybackAttemptBackend(
             return when (ownership.publish(reservation, created, handle)) {
                 Media3PublishResult.PUBLISHED -> {
                     created.renderedFrameProgressProbe.start()
+                    if (mse != null) created.alternativeWatchdog = watchAlternative(created, mse)
                     onOwnershipRepresented(handle)
                     Media3SetupResult(
                         outcome = PlaybackBackendStartOutcome.Started(handle),
@@ -493,10 +554,11 @@ internal class Media3PlaybackAttemptBackend(
                         player = player,
                         error = error,
                         context = Media3PlaybackFailureContext(
-                            sourceProtocol = Media3SourceProtocol.RTSP,
+                            sourceProtocol = if (owned.alternative != null) Media3SourceProtocol.HTTP else Media3SourceProtocol.RTSP,
                         ),
                     )
-                    owned.failureSignals.emit(failureClassifier.classify(evidence))
+                    val failure = owned.alternative?.failure(error) ?: failureClassifier.classify(evidence)
+                    owned.failureSignals.emit(failure)
                 }
 
                 override fun onSurfaceSizeChanged(width: Int, height: Int) {
@@ -589,6 +651,8 @@ internal class Media3PlaybackAttemptBackend(
 
     private fun releasePlayerOnMain(owned: OwnedMedia3Attempt): Boolean {
         checkMainLooper()
+        owned.alternativeWatchdog?.cancel()
+        owned.alternative?.cancel()
         owned.renderedFrameProgressProbe.stop()
         owned.progressEvidence.detachVideoOutput(
             requestedAttemptId = owned.attemptId,
@@ -604,7 +668,7 @@ internal class Media3PlaybackAttemptBackend(
                 )
             },
             releasePlayer = {
-                owned.player.release()
+                try { owned.player.release() } finally { owned.alternative?.close() }
                 true
             },
             releaseRegistryAttachment = {
@@ -612,7 +676,72 @@ internal class Media3PlaybackAttemptBackend(
             },
         )
     }
+
+    private fun watchAlternative(owned: OwnedMedia3Attempt, mse: AutomaticMseResources): Job =
+        CoroutineScope(mainDispatcher).launch {
+            fun stop(failure: ClassifiedPlaybackFailure) {
+                mse.cancel()
+                val hidden = owned.outputAttachment.target.detachAndHide(owned.player, owned.outputAttachment.generation)
+                owned.failureSignals.emit(if (hidden) failure else ALTERNATIVE_POLICY_REJECTED)
+            }
+            coroutineScope {
+                val refresh = launch {
+                    while (true) {
+                        delay(30_000L)
+                        if (!mse.live.refreshAuthorization()) { stop(ALTERNATIVE_ACCESS_CHANGED); return@launch }
+                    }
+                }
+                try {
+                    while (true) {
+                        delay(250L)
+                        mse.currentFailure()?.let { stop(it); return@coroutineScope }
+                    }
+                } finally { refresh.cancel() }
+            }
+        }
 }
+
+// Recovery requested by megabitus98; MSE transport adapted from Goofyschooler's PR #18.
+internal class AutomaticMseResources(context: Context, val live: AuthenticatedHttpLive,
+    authenticatedClient: okhttp3.OkHttpClient, private val enabled: () -> Boolean) {
+    private val closed = AtomicBoolean()
+    private val sources = java.util.concurrent.CopyOnWriteArrayList<app.opah.tv.playback.MseLiveDataSource>()
+    private val client = app.opah.tv.playback.httpLiveClient(live.localTransport?.client ?: authenticatedClient)
+    private val uri = live.uri.toHttpUrl()
+    val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
+        .setDataSourceFactory(androidx.media3.datasource.DataSource.Factory {
+            synchronized(sources) {
+                check(!closed.get()) { "Live connection closed" }
+                app.opah.tv.playback.MseLiveDataSource(client, app.opah.tv.playback.platformSupportsHevcMain51(),
+                    { !closed.get() && currentFailure() == null }, { candidate -> candidate == uri &&
+                        (live.localTransport?.allowsLiveUri(candidate) ?: (candidate.scheme == "https")) })
+                    .also { sources.add(it) }
+            }
+        }).setLoadErrorHandlingPolicy(object : androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy(0) {
+            override fun getRetryDelayMsFor(loadErrorInfo: androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy.LoadErrorInfo): Long = C.TIME_UNSET
+        })
+    fun currentFailure(): ClassifiedPlaybackFailure? = when {
+        !enabled() -> AUTOMATIC_RECOVERY_DISABLED
+        live.localTransport?.isCurrent() == false -> ALTERNATIVE_POLICY_REJECTED
+        !live.isAuthorized() -> ALTERNATIVE_ACCESS_CHANGED
+        else -> null
+    }
+    fun failure(error: Throwable): ClassifiedPlaybackFailure? = currentFailure() ?: when {
+        app.opah.tv.playback.isLiveConnectionPolicyFailure(error) -> ALTERNATIVE_POLICY_REJECTED
+        app.opah.tv.playback.liveFailureStatus(error) in setOf("HTTP 401", "HTTP 403") -> ALTERNATIVE_ACCESS_CHANGED
+        else -> null
+    }
+    fun cancel() { synchronized(sources) { closed.set(true); sources.forEach { it.cancel() } } }
+    fun close() { cancel(); sources.clear(); live.close() }
+}
+
+private val ALTERNATIVE_POLICY_REJECTED = ClassifiedPlaybackFailure(FailureCategory.AUTHORIZATION,
+    FailurePhase.SOURCE, PlaybackDiagnosticCode.CONNECTION_POLICY_REJECTED)
+private val ALTERNATIVE_ACCESS_CHANGED = ClassifiedPlaybackFailure(FailureCategory.AUTHORIZATION,
+    FailurePhase.SOURCE, PlaybackDiagnosticCode.STALE_ACCESS)
+private val AUTOMATIC_RECOVERY_DISABLED = ClassifiedPlaybackFailure(FailureCategory.UNKNOWN,
+    FailurePhase.SOURCE, PlaybackDiagnosticCode.AUTOMATIC_RECOVERY_DISABLED)
+private class AutomaticRecoveryDisabledException : java.io.IOException("Automatic recovery disabled")
 
 private class ProbedMedia3RenderersFactory(
     context: Context,
@@ -670,6 +799,8 @@ internal data class OwnedMedia3Attempt(
     val failureSignals: Media3FailureSignalEmitter,
     val renderedFrameProgressProbe: Media3RenderedFrameProgressProbe,
     val releaseProgress: Media3ReleaseProgress = Media3ReleaseProgress(),
+    val alternative: AutomaticMseResources? = null,
+    var alternativeWatchdog: Job? = null,
 )
 
 /**

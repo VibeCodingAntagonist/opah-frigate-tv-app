@@ -113,32 +113,46 @@ can reach it. You can also remove the old Mobile App device in Home Assistant.
 
 ## Keeping the connection safe
 
-### Optional HTTPS live video
+### Another live connection
 
-**Play using HTTPS** is an explicit choice for one live-camera viewing session.
-It uses the configured Frigate server address and signed-in account, with the
+**Play using another connection** uses your configured Frigate server for one
+live-camera session. Authenticated HTTPS keeps the signed-in account and the
 TV's normal certificate and hostname checks. Redirects and arbitrary video
 addresses are rejected. Opah does not create server streams or change Frigate's
 configuration to make a camera play.
 
-Opah checks the selected camera and stream against fresh account permissions
-and local PIN, guest, and privacy rules before opening, retrying, changing the
+Opah checks the selected camera and stream against fresh server access
+and local PIN and privacy rules before opening, retrying, changing the
 stream, or resuming. Access is checked again while playing. Observed permission
 loss, a failed access check, or expired access information stops playback and
 discards queued video. Server-side permission changes are detected through
 periodic checks rather than instant notification.
 
-Back leaves HTTPS playback; Home stops its connection and releases video and
+Back leaves this playback; Home stops its connection and releases video and
 audio. Returning from Home requires a new connection and access check. Video
 bytes are held only in bounded memory for playback, with no persistent video
 cache, downloaded recording, or raw response logging from this live session.
-This choice does not enable a background camera service or save a new
+This manual choice does not enable a background camera service or save a new
 connection preference.
 
-The option requires authenticated HTTPS on Frigate 0.18.2 or a compatible later
-stable 0.18 release. Older servers retain their existing connections; this
-option is not used to work around missing server-side camera authorization.
-See [compatibility](compatibility.md#optional-https-live-video) for requirements.
+An existing no-login HTTP connection on port `5000` can also use this path on
+a trusted private network. It is unencrypted and does not apply account camera
+restrictions. Opah keeps this path separate from authenticated sessions, sends
+no saved password or cookies on it, and requires a checked private destination.
+Local PIN and private-camera protection still apply. Use authenticated HTTPS
+when possible and never expose the internal service to the internet.
+
+**Try another connection automatically** is a separate setting for the saved
+server. It is off by default and resets when you change that connection.
+Automatic attempts use the same stream and checks, stop when access changes,
+and do not save the other connection as a permanent playback choice. There is
+no switch from an authenticated profile to a no-login profile to get around
+an access or certificate failure.
+
+This feature requires Frigate 0.18.2 or a compatible later stable 0.18 release.
+See [compatibility](compatibility.md#another-live-connection) for requirements,
+and [Frigate's authentication guidance](https://docs.frigate.video/configuration/authentication/)
+for its account and internal-service behavior.
 
 ### Alerts, notification pause, and guided setup
 

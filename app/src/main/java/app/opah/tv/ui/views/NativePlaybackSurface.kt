@@ -190,10 +190,12 @@ internal class NativePlaybackSurface(
     initialLiveRecoveryActions: NativeLiveRecoveryActions = NativeLiveRecoveryActions(),
     private val prepareHttpLive: suspend (PlaybackRequest) -> app.opah.tv.playback.AuthenticatedHttpLive? = { null },
     private val httpsPlayerFactory: (app.opah.tv.playback.AuthenticatedHttpLive, app.opah.tv.playback.media3.ExclusiveVideoOutputLease) -> app.opah.tv.playback.HttpsLivePlayer =
-        { live, lease -> app.opah.tv.playback.HttpsLivePlayer(activity, (activity.application as OpahApplication).container.httpClient, lease, live.isAuthorized) },
+        { live, lease -> app.opah.tv.playback.HttpsLivePlayer(activity, (activity.application as OpahApplication).container.httpClient, lease, live.isAuthorized,
+            localTransport = live.localTransport) },
     private val livePlayerFactory: LivePlayerFactory = (activity.application as OpahApplication).container.livePlayerFactory,
     private val openLiveSession: suspend (SingleLivePlaybackRequestId, PlayerViewMedia3VideoOutputTarget, Boolean) -> SingleLivePlaybackSession =
         { id, output, videoOnly -> (activity.application as OpahApplication).container.singleLivePlaybackCoordinator.open(id, output, videoOnly) },
+    private val recordedPlayerFactory: (Context, okhttp3.OkHttpClient, Boolean) -> ExoPlayer = RecordedPlayerFactory::create,
 ) : FrameLayout(activity) {
     private val application = activity.application as OpahApplication
     private val documentationPlayback = BuildConfig.DOCUMENTATION_MODE &&
@@ -371,6 +373,9 @@ internal class NativePlaybackSurface(
     private var closed = false
     private var feedbackPending = initialFeedbackPending
     private var liveRecoveryActions = initialLiveRecoveryActions
+    private var automaticConnectionActive = false
+    private var liveConnectionPreparing = false
+    private val allowPictureInPicture = pictureInPictureAvailable
     private var setupRecoveryVisible = false
     private var recoveryBackOnly = false
     private var recoverySizeOnly = false
@@ -420,7 +425,7 @@ internal class NativePlaybackSurface(
     private val recoveryRetry = controlButton("Try again", R.drawable.ic_retry, "Try again") {
         liveRecoveryActions.retry?.invoke()
     }.apply { tag = "playback:recovery-retry" }
-    private val recoveryHttps = controlButton("HTTPS", R.drawable.ic_videocam, "Try HTTPS") { liveRecoveryActions.tryHttps?.invoke() }
+    private val recoveryHttps = controlButton("Connection", R.drawable.ic_videocam, "Try another connection") { liveRecoveryActions.tryHttps?.invoke() }
         .apply { tag = "playback:recovery-https" }
     private val recoveryConnection = controlButton("Connection", R.drawable.ic_videocam, "Choose another connection") { liveRecoveryActions.chooseConnection?.invoke() }
         .apply { tag = "playback:recovery-connection" }
@@ -680,7 +685,9 @@ internal class NativePlaybackSurface(
 
     /** Remote and system Back dismiss all visible playback controls before leaving. */
     fun dismissPlaybackOsd(): Boolean {
-        if (request.httpsLiveRequestId != null) return false
+        if (request.httpsLiveRequestId != null || automaticConnectionActive) return false
+        // A pending live connection has no picture to keep watching behind the controls.
+        if (liveConnectionPreparing && player == null) return false
         if (closed || pictureInPictureActive || !chromeVisible || setupRecoveryVisible) return false
         chromeHideJob?.cancel()
         chromeHideJob = null
@@ -928,10 +935,10 @@ internal class NativePlaybackSurface(
                     )
                     livePlayer.player
                 }
-                PlaybackKind.RECORDED -> RecordedPlayerFactory.create(
+                PlaybackKind.RECORDED -> recordedPlayerFactory(
                     activity,
                     application.container.httpClient,
-                    preferSoftwareVideoDecoder = false,
+                    false,
                 ).apply {
                     player = this
                     val item = MediaItem.Builder().setUri(request.uri).apply {
@@ -967,6 +974,7 @@ internal class NativePlaybackSurface(
         recoverySizeOnly = reason == app.opah.tv.playback.HttpsLiveFailure.VIDEO_SIZE
         status.setText(when (reason) {
             app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED -> R.string.native_live_access_changed
+            app.opah.tv.playback.HttpsLiveFailure.LOCAL_UNAVAILABLE -> R.string.native_local_live_unavailable
             app.opah.tv.playback.HttpsLiveFailure.VIDEO_SIZE -> R.string.native_live_video_size_unsupported
             app.opah.tv.playback.HttpsLiveFailure.TIMEOUT -> R.string.native_https_timeout
             app.opah.tv.playback.HttpsLiveFailure.UNAVAILABLE -> R.string.native_https_unavailable
@@ -975,6 +983,7 @@ internal class NativePlaybackSurface(
             app.opah.tv.playback.HttpsLiveFailure.FAILED -> R.string.native_https_failed
         })
         showSetupRecovery(true, reason == app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED ||
+            reason == app.opah.tv.playback.HttpsLiveFailure.LOCAL_UNAVAILABLE ||
             reason == app.opah.tv.playback.HttpsLiveFailure.CLEANUP_FAILED)
     }
 
@@ -990,70 +999,77 @@ internal class NativePlaybackSurface(
                 status.setText(R.string.native_https_connecting)
                 val live = try { prepareHttpLive(request) }
                 catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: app.opah.tv.playback.LocalLiveUnavailableException) {
+                    showHttpsFailure(app.opah.tv.playback.HttpsLiveFailure.LOCAL_UNAVAILABLE)
+                    return@repeatOnLifecycle
+                }
                 catch (_: Exception) { null }
-                if (closed) return@repeatOnLifecycle
+                if (closed) { live?.close(); return@repeatOnLifecycle }
                 if (live == null || !live.isAuthorized()) {
+                    live?.close()
                     showHttpsFailure(app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED)
                     return@repeatOnLifecycle
                 }
-                title.text = request.title
-                val target = PlayerViewMedia3VideoOutputTarget(playerView, ::attachPlayer) { if (player === it) detachPlayer() }
-                val attempt = app.opah.tv.playback.compatibility.PlaybackAttemptId(
-                    app.opah.tv.playback.compatibility.PlaybackSessionId("https-${java.util.UUID.randomUUID()}"), 1)
-                val lease = app.opah.tv.playback.media3.awaitExclusiveVideoOutput(
-                    app.opah.tv.playback.media3.ProcessMedia3VideoOutputRegistry.instance, target, attempt,
-                    { !closed && live.isAuthorized() }, elapsedMillis = SystemClock::elapsedRealtime)
-                if (lease == null) {
-                    showHttpsFailure(if (live.isAuthorized()) app.opah.tv.playback.HttpsLiveFailure.BUSY else app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED)
-                    return@repeatOnLifecycle
-                }
-                val backend = try { httpsPlayerFactory(live, lease) } catch (_: Exception) {
-                    lease.finish { false }
-                    showHttpsFailure(app.opah.tv.playback.HttpsLiveFailure.CLEANUP_FAILED)
-                    return@repeatOnLifecycle
-                }
-                httpsBackend = backend
-                var firstFrame = false
-                var failure: app.opah.tv.playback.HttpsLiveFailure? = null
-                val frames = java.util.concurrent.atomic.AtomicLong()
-                backend.player.setVideoFrameMetadataListener { _, _, _, _ -> frames.incrementAndGet() }
-                val listener = object : Player.Listener {
-                    override fun onRenderedFirstFrame() { firstFrame = true }
-                    override fun onPlayerError(error: PlaybackException) {
-                        failure = when {
-                            !live.isAuthorized() || app.opah.tv.playback.liveFailureStatus(error) in setOf("HTTP 401", "HTTP 403") -> app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED
-                            DefaultMedia3PlaybackFailureClassifier.classify(error).category == FailureCategory.UNSUPPORTED_VIDEO_SIZE -> app.opah.tv.playback.HttpsLiveFailure.VIDEO_SIZE
-                            else -> app.opah.tv.playback.HttpsLiveFailure.UNAVAILABLE
-                        }
-                    }
-                    override fun onPlaybackStateChanged(playbackState: Int) {
-                        if (playbackState == Player.STATE_ENDED) failure = app.opah.tv.playback.HttpsLiveFailure.UNAVAILABLE
-                    }
-                }
                 try {
-                    backend.player.addListener(listener)
-                    kotlinx.coroutines.coroutineScope {
-                        val refresh = launch {
-                            while (true) { delay(30_000L); if (!live.refreshAuthorization()) { failure = app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED; break } }
-                        }
-                        try {
-                            val result = app.opah.tv.playback.runAuthorizedLiveSession(
-                                authorized = { !closed && live.isAuthorized() },
-                                start = { backend.prepare(live.uri, LivePlaybackOptions(videoOnly = request.compatibilityTestVideoOnly)) },
-                                firstFrame = { firstFrame }, failure = { failure },
-                                close = { if (!stopHttpsPlayback()) failure = app.opah.tv.playback.HttpsLiveFailure.CLEANUP_FAILED },
-                                progress = frames::get, wantsPlayback = { backend.player.playWhenReady }, elapsedMillis = SystemClock::elapsedRealtime)
-                            if (!closed) showHttpsFailure(if (failure == app.opah.tv.playback.HttpsLiveFailure.CLEANUP_FAILED) requireNotNull(failure)
-                                else result ?: failure ?: app.opah.tv.playback.HttpsLiveFailure.FAILED)
-                        } finally { refresh.cancel() }
+                    title.text = request.title
+                    val target = PlayerViewMedia3VideoOutputTarget(playerView, ::attachPlayer) { if (player === it) detachPlayer() }
+                    val attempt = app.opah.tv.playback.compatibility.PlaybackAttemptId(
+                        app.opah.tv.playback.compatibility.PlaybackSessionId("https-${java.util.UUID.randomUUID()}"), 1)
+                    val lease = app.opah.tv.playback.media3.awaitExclusiveVideoOutput(
+                        app.opah.tv.playback.media3.ProcessMedia3VideoOutputRegistry.instance, target, attempt,
+                        { !closed && live.isAuthorized() }, elapsedMillis = SystemClock::elapsedRealtime)
+                    if (lease == null) {
+                        showHttpsFailure(if (live.isAuthorized()) app.opah.tv.playback.HttpsLiveFailure.BUSY else app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED)
+                        return@repeatOnLifecycle
                     }
-                } catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { if (!closed) showHttpsFailure(app.opah.tv.playback.HttpsLiveFailure.FAILED) }
-                finally {
-                    backend.player.removeListener(listener)
-                    stopHttpsPlayback()
-                    detachPlayer()
-                }
+                    val backend = try { httpsPlayerFactory(live, lease) } catch (_: Exception) {
+                        lease.finish { false }
+                        showHttpsFailure(app.opah.tv.playback.HttpsLiveFailure.CLEANUP_FAILED)
+                        return@repeatOnLifecycle
+                    }
+                    httpsBackend = backend
+                    var firstFrame = false
+                    var failure: app.opah.tv.playback.HttpsLiveFailure? = null
+                    val frames = java.util.concurrent.atomic.AtomicLong()
+                    backend.player.setVideoFrameMetadataListener { _, _, _, _ -> frames.incrementAndGet() }
+                    val listener = object : Player.Listener {
+                        override fun onRenderedFirstFrame() { firstFrame = true }
+                        override fun onPlayerError(error: PlaybackException) {
+                            failure = when {
+                                !live.isAuthorized() || app.opah.tv.playback.liveFailureStatus(error) in setOf("HTTP 401", "HTTP 403") -> app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED
+                                DefaultMedia3PlaybackFailureClassifier.classify(error).category == FailureCategory.UNSUPPORTED_VIDEO_SIZE -> app.opah.tv.playback.HttpsLiveFailure.VIDEO_SIZE
+                                else -> app.opah.tv.playback.HttpsLiveFailure.UNAVAILABLE
+                            }
+                        }
+                        override fun onPlaybackStateChanged(playbackState: Int) {
+                            if (playbackState == Player.STATE_ENDED) failure = app.opah.tv.playback.HttpsLiveFailure.UNAVAILABLE
+                        }
+                    }
+                    try {
+                        backend.player.addListener(listener)
+                        kotlinx.coroutines.coroutineScope {
+                            val refresh = launch {
+                                while (true) { delay(30_000L); if (!live.refreshAuthorization()) { failure = app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED; break } }
+                            }
+                            try {
+                                val result = app.opah.tv.playback.runAuthorizedLiveSession(
+                                    authorized = { !closed && live.isAuthorized() },
+                                    start = { backend.prepare(live.uri, LivePlaybackOptions(videoOnly = request.compatibilityTestVideoOnly)) },
+                                    firstFrame = { firstFrame }, failure = { failure },
+                                    close = { if (!stopHttpsPlayback()) failure = app.opah.tv.playback.HttpsLiveFailure.CLEANUP_FAILED },
+                                    progress = frames::get, wantsPlayback = { backend.player.playWhenReady }, elapsedMillis = SystemClock::elapsedRealtime)
+                                if (!closed) showHttpsFailure(if (failure == app.opah.tv.playback.HttpsLiveFailure.CLEANUP_FAILED) requireNotNull(failure)
+                                    else result ?: failure ?: app.opah.tv.playback.HttpsLiveFailure.FAILED)
+                            } finally { refresh.cancel() }
+                        }
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { if (!closed) showHttpsFailure(app.opah.tv.playback.HttpsLiveFailure.FAILED) }
+                    finally {
+                        backend.player.removeListener(listener)
+                        stopHttpsPlayback()
+                        detachPlayer()
+                    }
+                } finally { live.close() }
             }
         }
     }
@@ -1086,6 +1102,7 @@ internal class NativePlaybackSurface(
                     onAttached = { attached -> attachPlayer(attached) },
                     onDetached = { detached -> if (player === detached) detachPlayer() },
                 )
+                liveConnectionPreparing = true
                 val session = try {
                     openLiveSession(
                         SingleLivePlaybackRequestId(rawRequestId),
@@ -1093,16 +1110,30 @@ internal class NativePlaybackSurface(
                         request.compatibilityTestVideoOnly,
                     )
                 } catch (cancelled: CancellationException) {
+                    liveConnectionPreparing = false
                     throw cancelled
                 } catch (_: Exception) {
+                    liveConnectionPreparing = false
                     status.setText(R.string.native_live_start_failed)
                     return@repeatOnLifecycle
                 }
                 try {
+                    var automaticRecoveryUsed = false
                     session.snapshots.collect { snapshot ->
                         val state = snapshot.state
+                        if (state is PlaybackCompatibilityState.Finished) liveConnectionPreparing = false
+                        automaticConnectionActive = when (state) {
+                            is PlaybackCompatibilityState.Attempting -> state.attempt.candidate.alternativeConnection
+                            is PlaybackCompatibilityState.UnpersistedLive -> state.attempt.candidate.alternativeConnection
+                            is PlaybackCompatibilityState.Releasing -> state.attempt.candidate.alternativeConnection
+                            else -> false
+                        }
+                        automaticRecoveryUsed = automaticRecoveryUsed || automaticConnectionActive
+                        pictureInPicture.visibility = if (allowPictureInPicture && request.kind == PlaybackKind.LIVE &&
+                            !automaticConnectionActive) View.VISIBLE else View.GONE
+                        if (automaticConnectionActive) { pictureInPictureReady = false; pictureInPicture.isEnabled = false }
                         status.text = when (state) {
-                            is PlaybackCompatibilityState.Attempting -> "Trying a playback option"
+                            is PlaybackCompatibilityState.Attempting -> if (automaticConnectionActive) "Trying another connection" else "Trying a playback option"
                             is PlaybackCompatibilityState.Recovering -> "Trying the next playback option"
                             is PlaybackCompatibilityState.Verified,
                             is PlaybackCompatibilityState.UnpersistedLive,
@@ -1129,7 +1160,9 @@ internal class NativePlaybackSurface(
                         }
                         val result = (state as? PlaybackCompatibilityState.Finished)?.result
                         val denied = result?.let(::nativePlaybackAccessDenied) == true
-                        showSetupRecovery(denied || result?.let(::nativePlaybackMissingSetup) != null, backOnly = denied)
+                        if (result != null && automaticRecoveryUsed) recoverySizeOnly = nativePlaybackSizeRejected(result)
+                        showSetupRecovery(denied || result?.let(::nativePlaybackMissingSetup) != null ||
+                            (automaticRecoveryUsed && result != null && result !is PlaybackResult.Cancelled), backOnly = denied)
                         if (request.compatibilityTest) {
                             nativeCompatibilityTestStatus(request.title, state)?.let(onCompatibilityTestStatus)
                         }
@@ -1144,6 +1177,7 @@ internal class NativePlaybackSurface(
                         }
                     }
                 } finally {
+                    liveConnectionPreparing = false
                     withContext(NonCancellable) { session.close() }
                     detachPlayer()
                 }
@@ -1168,8 +1202,8 @@ internal class NativePlaybackSurface(
                     Player.STATE_READY -> if (!request.compatibilityTest) {
                         status.text = request.detail ?: if (request.kind == PlaybackKind.LIVE) "Live" else "Recording"
                         if (request.kind == PlaybackKind.LIVE) {
-                            pictureInPictureReady = true
-                            pictureInPicture.isEnabled = true
+                            pictureInPictureReady = !automaticConnectionActive
+                            pictureInPicture.isEnabled = !automaticConnectionActive
                             pictureInPicture.alpha = 1f
                         }
                     }
@@ -1435,7 +1469,7 @@ internal class NativePlaybackSurface(
     }
 
     private fun enterPictureInPicture() {
-        if (!pictureInPictureReady) return
+        if (!pictureInPictureReady || automaticConnectionActive) return
         val videoSize = player?.videoSize
         val sourceRect = Rect().takeIf { playerView.getGlobalVisibleRect(it) }
         setPictureInPictureActive(true)

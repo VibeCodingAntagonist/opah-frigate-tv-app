@@ -2,6 +2,29 @@
 
 This page lists the user-visible changes in each Opah release.
 
+## 0.7.3
+
+- Use **Play using another connection** with a supported secure Frigate
+  connection or an existing no-login connection on a trusted private network.
+- Enable **Try another connection automatically** to try the same camera stream
+  another way when required video setup details are missing. This setting is
+  off by default and resets when you change the saved server connection.
+- Keep the selected stream when changing connections. With Automatic quality,
+  a stream named Main no longer gets priority just because of its label when
+  opening the other connection.
+
+PIN and private-camera protection still apply. The other connection does not
+lower the camera resolution or remove the TV's video-format limits.
+
+Thanks to [megabitus98](https://github.com/megabitus98) for the local-connection
+patch, stream-selection report, and Philips testing in
+[#21](https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/issues/21).
+The HTTPS work adapted from [Goofyschooler](https://github.com/Goofyschooler)'s
+[PR #18](https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/pull/18)
+remains part of this feature. The affected Philips setup and
+[#22](https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/issues/22)'s
+larger stream still need their own retests.
+
 ## 0.7.2
 
 - Hold **OK** on a camera and choose **Play using HTTPS** for an optional live

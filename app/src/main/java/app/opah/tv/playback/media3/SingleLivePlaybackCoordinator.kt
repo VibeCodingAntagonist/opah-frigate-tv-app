@@ -81,6 +81,7 @@ internal class SingleLivePlaybackCoordinator(
     private val identityFactory: CompatibilityIdentityFactory,
     private val strategyStore: VerifiedPlaybackStrategyStore,
     private val persistence: PlaybackStrategyPersistenceCoordinator,
+    private val authenticatedClient: okhttp3.OkHttpClient,
     capacityAdapter: AndroidPlaybackResourceCapacityAdapter =
         AndroidPlaybackResourceCapacityAdapter(),
     private val clock: PlaybackElapsedRealtimeClock =
@@ -95,10 +96,14 @@ internal class SingleLivePlaybackCoordinator(
     private val revocationEpoch = AtomicLong(0L)
     private val routeSource = ActiveSingleLiveRouteSnapshotSource()
     private val routeGateway = RevisionBoundRtspRouteGateway(routeSource)
+    private val activeAlternative = AtomicReference<ActiveAlternative?>(null)
     private val backend = Media3PlaybackAttemptBackend(
         context = applicationContext,
         tokenRedeemer = routeGateway,
         videoOutputs = videoOutputs,
+        authenticatedClient = authenticatedClient,
+        automaticAlternativeEnabled = { activeAlternative.get()?.enabled?.invoke() == true },
+        prepareAlternative = { attempt -> activeAlternative.get()?.prepare(attempt) },
     )
     private val resourceLeases = PlaybackResourceLeaseCoordinator(
         capacity = capacityAdapter.currentCapacity(),
@@ -131,6 +136,8 @@ internal class SingleLivePlaybackCoordinator(
         preferRtpTcp: Boolean,
         useSavedStrategyFirst: Boolean = true,
         purpose: PlaybackPurpose = PlaybackPurpose.SINGLE_LIVE,
+        automaticAlternativeEnabled: () -> Boolean = { false },
+        prepareAlternative: (suspend (SingleLivePlaybackRequestId, String) -> app.opah.tv.playback.AuthenticatedHttpLive?)? = null,
     ): SingleLivePlaybackRequestId {
         require(purpose == PlaybackPurpose.SINGLE_LIVE || purpose == PlaybackPurpose.MONITOR) {
             "This coordinator only accepts single-output live playback purposes"
@@ -141,18 +148,26 @@ internal class SingleLivePlaybackCoordinator(
         require(camera.streams.any { it.streamName == preferredStreamName }) {
             "Live stream is unavailable"
         }
+        val currentCamera = snapshot.cameras.first { it.name == camera.name }
+        require(camera.streams.all { requested -> currentCamera.streams.any { it.streamName == requested.streamName } }) {
+            "Live stream is no longer available"
+        }
 
         val prepared = PreparedRequest(
             revocationEpoch = revocationEpoch.get(),
             profile = profile,
             user = snapshot.user,
             frigateVersion = snapshot.frigateVersion,
-            camera = camera,
+            camera = camera.copy(streams = camera.streams.map { requested ->
+                currentCamera.streams.first { it.streamName == requested.streamName }
+            }),
             preferredStreamName = preferredStreamName,
             device = device,
             preferRtpTcp = preferRtpTcp,
             useSavedStrategyFirst = useSavedStrategyFirst,
             purpose = purpose,
+            automaticAlternativeEnabled = automaticAlternativeEnabled,
+            prepareAlternative = prepareAlternative,
         )
         val id = SingleLivePlaybackRequestId("live-${UUID.randomUUID()}")
         synchronized(requestLock) {
@@ -192,10 +207,11 @@ internal class SingleLivePlaybackCoordinator(
                 error("Live playback needs an app restart")
         }
         val activation = routeSource.activate(materialized.routeSnapshot)
+        val sessionId = PlaybackSessionId("single-${UUID.randomUUID()}")
         val runner = PlaybackCompatibilitySessionRunner(
             scope = processScope,
             plan = plan,
-            sessionId = PlaybackSessionId("single-${UUID.randomUUID()}"),
+            sessionId = sessionId,
             clock = clock,
             routeGateway = AuthorizingPlaybackRouteGateway(routeGateway),
             resourceLeases = resourceLeases,
@@ -205,6 +221,9 @@ internal class SingleLivePlaybackCoordinator(
             cleanupHandoff = cleanupOwner,
             snapshotCleanupHandoff = snapshotCleanupOwner,
         )
+        // The runner assigns a fresh run ID. The requested ID is not an execution capability.
+        activeAlternative.set(ActiveAlternative.fromRunner(runner, request.automaticAlternativeEnabled,
+            { stream -> request.prepareAlternative?.invoke(requestId, stream) }, materialized.streamNames))
         lateinit var session: SingleLivePlaybackSession
         session = SingleLivePlaybackSession(
             snapshots = runner.snapshots,
@@ -266,6 +285,7 @@ internal class SingleLivePlaybackCoordinator(
             current + 1L
         }
         synchronized(requestLock) { requests.clear() }
+        activeAlternative.set(null)
         routeSource.revokeAll()
         val session = activeSession
         processScope.launch {
@@ -285,6 +305,7 @@ internal class SingleLivePlaybackCoordinator(
         try {
             runner.stop()
         } finally {
+            activeAlternative.set(null)
             routeSource.deactivate(activation)
             routeGateway.invalidate()
             check(videoOutputs.unregister(registration)) {
@@ -363,6 +384,7 @@ internal class SingleLivePlaybackCoordinator(
             privacyRevision = 0L,
         )
         val routes = LinkedHashMap<PlaybackRouteLookup, PrevalidatedRtspUri>()
+        val streamNames = LinkedHashMap<PlaybackRouteLookup, String>()
         val sourcePresentations = LinkedHashMap<
             app.opah.tv.playback.compatibility.CompatibilityIdentityKey,
             SingleLiveSourcePresentation,
@@ -402,9 +424,15 @@ internal class SingleLivePlaybackCoordinator(
                     DecoderMode.ALLOW_SOFTWARE,
                 ),
                 available = option.metadata?.available != false,
+                automaticAlternativeAllowed = request.purpose == PlaybackPurpose.SINGLE_LIVE &&
+                    request.prepareAlternative != null && request.automaticAlternativeEnabled() &&
+                    app.opah.tv.playback.supportsAuthorizedHttpsLive(request.frigateVersion) &&
+                    app.opah.tv.playback.httpLiveUri(request.profile.apiBaseUrl, option.streamName) != null &&
+                    (option.metadata?.videoCodec?.mimeType?.let { mime -> request.device.codecs.any { it.supported && it.mimeType == mime } } != false),
             )
             routes[PlaybackRouteLookup(source.routeId, source.streamId)] =
                 request.profile.prevalidatedRtspRoute(option.streamName)
+            streamNames[PlaybackRouteLookup(source.routeId, source.streamId)] = option.streamName
             sourcePresentations[source.persistenceScope] = SingleLiveSourcePresentation(
                 preferred = index == 0,
                 pixels = option.metadata?.let { metadata ->
@@ -438,6 +466,7 @@ internal class SingleLivePlaybackCoordinator(
                 rtpTcpPreferred = request.preferRtpTcp,
                 sources = sourcePresentations,
             ),
+            streamNames = streamNames,
         )
     }
 
@@ -452,13 +481,33 @@ internal class SingleLivePlaybackCoordinator(
         val preferRtpTcp: Boolean,
         val useSavedStrategyFirst: Boolean,
         val purpose: PlaybackPurpose,
+        val automaticAlternativeEnabled: () -> Boolean,
+        val prepareAlternative: (suspend (SingleLivePlaybackRequestId, String) -> app.opah.tv.playback.AuthenticatedHttpLive?)?,
     )
 
     private data class MaterializedRequest(
         val context: PlaybackCompatibilityContext,
         val routeSnapshot: TrustedRtspRouteSnapshot,
         val explanationDescriptor: SingleLiveExplanationDescriptor,
+        val streamNames: Map<PlaybackRouteLookup, String>,
     )
+
+    internal class ActiveAlternative private constructor(private val sessionId: PlaybackSessionId,
+        val enabled: () -> Boolean,
+        private val prepareRoute: suspend (String) -> app.opah.tv.playback.AuthenticatedHttpLive?,
+        private val streamNames: Map<PlaybackRouteLookup, String>) {
+        suspend fun prepare(attempt: app.opah.tv.playback.compatibility.AuthorizedPlaybackAttempt): app.opah.tv.playback.AuthenticatedHttpLive? {
+            val candidate = attempt.attempt.candidate
+            if (attempt.attempt.id.sessionId != sessionId || !candidate.alternativeConnection || !enabled()) return null
+            return streamNames[PlaybackRouteLookup(candidate.routeId, candidate.streamId)]?.let { prepareRoute(it) }
+        }
+        companion object {
+            fun fromRunner(runner: PlaybackCompatibilitySessionRunner, enabled: () -> Boolean,
+                prepareRoute: suspend (String) -> app.opah.tv.playback.AuthenticatedHttpLive?,
+                streamNames: Map<PlaybackRouteLookup, String>): ActiveAlternative = ActiveAlternative(
+                    runner.snapshots.value.state.sessionId, enabled, prepareRoute, streamNames.toMap())
+        }
+    }
 
     private companion object {
         const val MAX_PREPARED_REQUESTS = 16

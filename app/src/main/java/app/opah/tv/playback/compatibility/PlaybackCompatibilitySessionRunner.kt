@@ -1311,7 +1311,8 @@ class PlaybackCompatibilitySessionRunner(
         val operationDeadline = minOf(
             command.attempt.firstFrameDeadlineElapsedMillis,
             command.totalDeadlineElapsedMillis,
-            safeRunnerAdd(now(), preparationOperationTimeoutMillis),
+            if (command.attempt.candidate.alternativeConnection) command.attempt.firstFrameDeadlineElapsedMillis
+            else safeRunnerAdd(now(), preparationOperationTimeoutMillis),
         )
         val remainingMillis = operationDeadline - now()
         if (remainingMillis <= 0L) return BackendStartWaitResult.TimedOut

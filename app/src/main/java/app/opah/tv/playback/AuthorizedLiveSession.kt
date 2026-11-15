@@ -8,7 +8,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeoutOrNull
 
-internal enum class HttpsLiveFailure { ACCESS_CHANGED, UNAVAILABLE, TIMEOUT, VIDEO_SIZE, FAILED, BUSY, CLEANUP_FAILED }
+internal enum class HttpsLiveFailure { ACCESS_CHANGED, LOCAL_UNAVAILABLE, UNAVAILABLE, TIMEOUT, VIDEO_SIZE, FAILED, BUSY, CLEANUP_FAILED }
 
 /** A refresh cannot extend stale evidence unless a fresh authenticated scope check succeeds. */
 internal class HttpsAccessLease(

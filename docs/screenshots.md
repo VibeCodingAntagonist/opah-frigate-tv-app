@@ -1,4 +1,4 @@
-# Opah 0.7.0 interface gallery
+# Opah 0.7.3 interface gallery
 
 Every image below is a 1920×1080 Android TV screenshot made with fictional
 example data and generated camera scenes. No real camera, account, server, or
@@ -106,6 +106,10 @@ automation buttons. Home Assistant button requests require PIN authorization.
 | <img src="screenshots/36-recording-preview.png" alt="A generated camera scene playing in the optional muted recording preview with playback controls" width="720"> |
 
 ## Settings and updates
+
+| Camera playback choices |
+| --- |
+| <img src="screenshots/38-playback-settings.png" alt="Cameras and Playback settings with automatic connection recovery off by default" width="720"> |
 
 | Settings | Up to date |
 | --- | --- |

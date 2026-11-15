@@ -846,7 +846,10 @@ internal class NativeOpahController(
                 val favoriteIndex = state.settings.favoriteCameraNames.indexOf(cameraName)
                 val choices = buildList {
                     if (viewModel.canPlayUsingHttps(camera)) {
-                        add(Triple("https-live", "Play using HTTPS", "Use this connection for this viewing session"))
+                        add(Triple("https-live", "Play using another connection",
+                            if (app.opah.tv.playback.isLocalHttpLiveBase(state.activeProfile?.apiBaseUrl))
+                                "This local connection is not encrypted and does not use Frigate account permissions"
+                            else "Use this connection for this viewing session"))
                     }
                     add(Triple("refresh", "Refresh preview", ""))
                     add(Triple("favorite", if (tile.favorite) "Remove favorite" else "Pin as favorite", ""))
@@ -2788,6 +2791,15 @@ internal class NativeOpahController(
                 )
             }
             add(section("playback:opening", "When video opens", "These choices apply next time video opens"))
+            if (state.savedProfile != null && state.savedProfile == state.activeProfile &&
+                app.opah.tv.data.automaticLiveRecoveryBinding(state.savedProfile) != null &&
+                state.snapshot?.frigateVersion?.let { app.opah.tv.playback.supportsAuthorizedHttpsLive(it) } == true) {
+                add(toggle("playback:automatic-connection", "Try another connection automatically",
+                    state.automaticLiveRecovery.enabledFor(state.savedProfile),
+                    description = "For this server · When supported, try another connection before using a smaller stream") {
+                    viewModel.updateAutomaticLiveRecovery(!state.automaticLiveRecovery.enabledFor(state.savedProfile))
+                })
+            }
             add(toggle("playback:tcp", "Prefer a reliable connection", state.settings.preferRtpTcp) {
                 viewModel.updatePreferRtpTcp(!state.settings.preferRtpTcp)
             })
@@ -4119,8 +4131,9 @@ internal class NativeOpahController(
             retry = if (options.any { it.streamName == request.liveStreamName }) {
                 { if (https) viewModel.recoverHttpsPlayback(requestId) else viewModel.recoverLivePlayback(requestId) }
             } else null,
-            tryHttps = if (!https && camera != null && viewModel.canPlayUsingHttps(camera)) {
-                { viewModel.playUsingHttps(camera) }
+            tryHttps = if (!https && camera != null && request.liveStreamName != null &&
+                viewModel.canPlayUsingHttps(camera, request.liveStreamName)) {
+                { viewModel.recoverLiveUsingHttps(requestId) }
             } else null,
             chooseConnection = if (https && camera != null) {
                 { showChoiceDialog("Choose a connection", "Use the standard connection for this camera",

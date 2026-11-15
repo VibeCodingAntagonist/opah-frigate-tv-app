@@ -63,8 +63,9 @@
     <string name="native_live_missing_video_setup">The camera did not provide the video setup information needed for this connection</string>
     <string name="native_live_access_changed">Access changed and playback stopped</string>
     <string name="native_https_title">Live video</string>
-    <string name="native_https_connecting">Connecting HTTPS video</string>
-    <string name="native_https_unavailable">HTTPS live video is unavailable for this camera</string>
+    <string name="native_https_connecting">Connecting to camera</string>
+    <string name="native_https_unavailable">Another connection is unavailable for this camera</string>
+    <string name="native_local_live_unavailable">This connection is available only on a trusted local network</string>
     <string name="native_https_timeout">The camera did not start or continue playing in time</string>
     <string name="native_https_cleanup_failed">Close and reopen Opah before playing another video</string>
     <string name="native_https_busy">Another video is still closing</string>

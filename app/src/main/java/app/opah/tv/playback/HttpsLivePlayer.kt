@@ -19,7 +19,7 @@ import okhttp3.OkHttpClient
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import app.opah.tv.playback.media3.ExclusiveVideoOutputLease
 
-/** Continuous fMP4 over Frigate's MSE route; retains authenticated TLS and cookie policy. */
+/** Frigate MSE with authenticated TLS or an explicitly scoped, credential-free local transport. */
 @UnstableApi
 internal class HttpsLivePlayer(
     context: Context,
@@ -27,11 +27,16 @@ internal class HttpsLivePlayer(
     private val outputLease: ExclusiveVideoOutputLease,
     private val authorized: () -> Boolean = { true },
     sizeProbe: app.opah.tv.playback.media3.VideoDecoderSizeProbe = app.opah.tv.playback.media3.AndroidVideoDecoderSizeProbe(),
+    private val localTransport: LocalHttpLiveTransport? = null,
 ) : LivePlayer {
     private val sources = CopyOnWriteArrayList<MseLiveDataSource>()
     private var released = false
     private var attached = false
-    private val client = httpLiveClient(authenticatedClient)
+    private val client = httpLiveClient(localTransport?.client ?: authenticatedClient)
+    private val currentAccess = { authorized() && (localTransport?.isCurrent() != false) }
+    private val acceptsUri: (okhttp3.HttpUrl) -> Boolean = { url ->
+        localTransport?.allowsLiveUri(url) ?: (url.scheme == "https")
+    }
     private val hevcSupported = platformSupportsHevcMain51()
     override val player = ExoPlayer.Builder(context.applicationContext,
         SizeCheckedRenderersFactory(context.applicationContext, sizeProbe)
@@ -41,7 +46,7 @@ internal class HttpsLivePlayer(
         .setDataSourceFactory(DataSource.Factory {
             synchronized(sources) {
                 if (released) throw IOException("Live player released")
-                MseLiveDataSource(client, hevcSupported, authorized).also { sources.add(it) }
+                MseLiveDataSource(client, hevcSupported, currentAccess, acceptsUri).also { sources.add(it) }
             }
         })
         .setLoadErrorHandlingPolicy(object : DefaultLoadErrorHandlingPolicy(0) {
@@ -53,8 +58,8 @@ internal class HttpsLivePlayer(
 
     override fun prepare(uri: String, options: LivePlaybackOptions) {
         check(!released) { "Live player released" }
-        check(authorized()) { "Live access unavailable" }
-        require(uri.toHttpUrl().scheme == "https")
+        check(currentAccess()) { "Live access unavailable" }
+        require(acceptsUri(uri.toHttpUrl()))
         attached = true
         outputLease.attachment.target.attach(player, outputLease.attachment.generation)
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
@@ -79,6 +84,7 @@ internal class HttpsLivePlayer(
         }.getOrDefault(false)
         val decoderReleased = runCatching { player.release() }.isSuccess
         sources.clear()
-        cancelled && concealed && decoderReleased
+        val transportClosed = runCatching { localTransport?.close() }.isSuccess
+        cancelled && concealed && decoderReleased && transportClosed
     }
 }

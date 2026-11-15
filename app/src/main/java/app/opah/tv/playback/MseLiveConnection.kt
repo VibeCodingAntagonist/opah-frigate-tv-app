@@ -14,6 +14,7 @@ import okio.ByteString
 internal class MseLiveConnection(
     private val hevcSupported: Boolean = false,
     private val authorized: () -> Boolean = { true },
+    private val acceptsUri: (okhttp3.HttpUrl) -> Boolean = { it.scheme == "https" },
     private val openSocket: (Request, WebSocketListener) -> WebSocket,
 ) {
     private val pipe = LiveBytePipe()
@@ -25,8 +26,8 @@ internal class MseLiveConnection(
     @Synchronized fun open(uri: String) {
         if (stopped || started || !authorized()) throw IOException("Live stream closed")
         val url = uri.toHttpUrl()
-        if (url.scheme != "https" || url.username.isNotEmpty() || url.password.isNotEmpty()) {
-            throw IOException("Secure live origin required")
+        if (!acceptsUri(url) || url.username.isNotEmpty() || url.password.isNotEmpty()) {
+            throw LiveTransportException(policyRejected = true)
         }
         started = true
         val created = openSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
@@ -50,7 +51,7 @@ internal class MseLiveConnection(
                 }
             }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                fail(LiveTransportException(response?.code))
+                fail(LiveTransportException(response?.code, isLiveConnectionPolicyFailure(t)))
             }
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { cancel() }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { cancel() }
