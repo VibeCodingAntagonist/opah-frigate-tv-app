@@ -1,6 +1,7 @@
 package app.opah.tv.setup
 
 import app.opah.tv.data.model.ConnectionProfile
+import app.opah.tv.data.model.FrigateUserProfile
 import app.opah.tv.data.network.FrigateApiClient
 import app.opah.tv.data.network.SessionCookieStore
 import kotlinx.coroutines.NonCancellable
@@ -13,7 +14,7 @@ import okhttp3.HttpUrl
 
 /** Credential checks never borrow, replace, or clear the installed connection's cookies. */
 internal class FrigateSetupCheck {
-    suspend fun check(profile: ConnectionProfile, password: String) {
+    suspend fun check(profile: ConnectionProfile, password: String): FrigateUserProfile {
         val jar = object : CookieJar, SessionCookieStore {
             private var cookies = emptyList<Cookie>()
             @Synchronized override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) { this.cookies = cookies.toList() }
@@ -21,10 +22,15 @@ internal class FrigateSetupCheck {
             @Synchronized override fun clear() { cookies = emptyList() }
             @Synchronized override fun hasUnexpiredSession() = cookies.any { it.expiresAt > System.currentTimeMillis() }
         }
-        val client = FrigateApiClient.defaultClient(jar)
+        val client = FrigateApiClient.defaultClient(if (profile.withoutSignIn) CookieJar.NO_COOKIES else jar)
         val api = FrigateApiClient(client, jar)
-        try { withTimeout(10_000) { api.login(profile, password); api.getVersion(profile) } }
-        finally {
+        try {
+            return withTimeout(10_000) {
+                val user = api.login(profile, password)
+                api.getVersion(profile)
+                user
+            }
+        } finally {
             withContext(NonCancellable) { withTimeoutOrNull(2_000) { runCatching { api.logout(profile) } } }
             jar.clear(); client.connectionPool.evictAll()
         }

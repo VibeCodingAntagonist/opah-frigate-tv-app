@@ -210,6 +210,7 @@ class AppContainer(context: Context) {
             connected = { homeAssistantConnection.state.value.phase == app.opah.tv.homeassistant.HomeAssistantConnectionPhase.CONNECTED },
             disclosure = { homeAssistantRichPolicy().disclosure },
             pause = notificationPause,
+            verifyActionPin = { pinCredentialService.verifyForSingleAction(it) },
         ).also { platform ->
             homeAssistantProcessScope.launch {
                 val cameraPrivacy = realtimeRuntime.owner.state.map {
@@ -235,6 +236,11 @@ class AppContainer(context: Context) {
         val decision = PrivacyDecisionEngine().decide(PrivacyRequest(PrivacySurface.SETTINGS,
             PrivacyTarget.LocalAction(app.opah.tv.privacy.PrivacyLocalAction.OPEN_SETTINGS), snapshot.epoch), snapshot)
         return decision is PrivacyDecision.Allow || decision is PrivacyDecision.AllowRedacted
+    }
+
+    internal fun canStartHomeAssistantSetup(): Boolean {
+        val ready = privacyRepository.state.value as? app.opah.tv.privacy.PrivacyRepositoryState.Ready ?: return false
+        return !ready.pinRecordCorrupt && !ready.policy.guestModeActive && homeAssistantConnection.canRegister()
     }
     internal fun showSetupPreview(identity: app.opah.tv.notifications.AndroidNotificationIdentity,
         appearance: app.opah.tv.data.model.AppSettings, active: () -> Boolean, shown: () -> Unit) {
@@ -930,7 +936,7 @@ class AppContainer(context: Context) {
     internal suspend fun restoreTvAlertsAfterProcessRecreation(): Boolean {
         if (!AndroidNotificationChannels.eventChannelsAvailable(appContext)) return false
         val profile = profileRepository.load() ?: return false
-        if (!profile.usesUnauthenticatedFrigatePort && !cookieJar.hasUnexpiredSession()) return false
+        if (!profile.withoutSignIn && !cookieJar.hasUnexpiredSession()) return false
         val profileKey = compatibilityIdentityFactory.derive(
             CompatibilityIdentityDomain.PROFILE,
             profile.compatibilityIdentityComponents(),
@@ -960,7 +966,7 @@ class AppContainer(context: Context) {
         if (runtime.owner.currentState().profileState is app.opah.tv.data.realtime.RealtimeProfileState.Unavailable) {
             realtimeProcessScope.launch {
                 val profile = profileRepository.load() ?: return@launch
-                if (!profile.usesUnauthenticatedFrigatePort && !cookieJar.hasUnexpiredSession()) return@launch
+                if (!profile.withoutSignIn && !cookieJar.hasUnexpiredSession()) return@launch
                 runCatching { apiClient.getVersion(profile) }
                     .onSuccess { version -> runtime.activateAuthenticatedProfile(profile, version) }
             }
@@ -1002,7 +1008,7 @@ class AppContainer(context: Context) {
         ) {
             realtimeProcessScope.launch {
                 val profile = profileRepository.load() ?: return@launch
-                if (!profile.usesUnauthenticatedFrigatePort && !cookieJar.hasUnexpiredSession()) return@launch
+                if (!profile.withoutSignIn && !cookieJar.hasUnexpiredSession()) return@launch
                 runCatching { apiClient.getVersion(profile) }
                     .onSuccess { version -> runtime.activateAuthenticatedProfile(profile, version) }
             }

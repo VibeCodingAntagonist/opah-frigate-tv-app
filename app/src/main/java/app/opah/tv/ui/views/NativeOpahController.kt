@@ -43,9 +43,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import app.opah.tv.PictureInPictureRequest
 import app.opah.tv.R
 import app.opah.tv.data.ConnectionProfileFactory
-import app.opah.tv.data.model.AppearanceMode
 import app.opah.tv.data.model.Camera
-import app.opah.tv.data.model.CustomThemeColors
 import app.opah.tv.data.model.ThemeColorPolicy
 import app.opah.tv.data.model.FrigateFeature
 import app.opah.tv.data.model.FrigateCapabilityAvailability
@@ -55,6 +53,7 @@ import app.opah.tv.data.model.StartupTarget
 import app.opah.tv.data.model.StartupTargetKind
 import app.opah.tv.data.model.StreamPreference
 import app.opah.tv.notifications.AlertMode
+import app.opah.tv.notifications.AndroidNotificationIdentity
 import app.opah.tv.notifications.NotificationPrivacy
 import app.opah.tv.notifications.android.TvAlertOverlayHorizontalPosition
 import app.opah.tv.notifications.android.TvAlertOverlayImageSize
@@ -62,6 +61,7 @@ import app.opah.tv.notifications.android.TvAlertOverlayVerticalPosition
 import app.opah.tv.notifications.android.TvAlertDeliveryStatus
 import app.opah.tv.awareness.AwarenessReviewSeverity
 import app.opah.tv.privacy.PinScope
+import app.opah.tv.playback.BIRDSEYE_STRETCH_PREFERENCE_KEY
 import app.opah.tv.ui.Phase0UiState
 import app.opah.tv.ui.Phase0ViewModel
 import app.opah.tv.ui.ConnectionFormSubmission
@@ -83,7 +83,6 @@ import app.opah.tv.ui.ReviewActionError
 import app.opah.tv.ui.actionErrorFor
 import app.opah.tv.ui.visibleReviewItems
 import app.opah.tv.ui.hasPendingWrite
-import app.opah.tv.ui.SETTINGS_PAGE_ORDER
 import app.opah.tv.ui.SettingsPage
 import app.opah.tv.ui.TvAlertSchedulePreset
 import app.opah.tv.ui.TvAlertSnoozeChoice
@@ -104,10 +103,6 @@ import app.opah.tv.ui.nextActivityControlState
 import app.opah.tv.ui.nextReviewPlaybackItem
 import app.opah.tv.ui.projectForPrivacy
 import app.opah.tv.ui.resolveConfiguredStartupTarget
-import app.opah.tv.ui.startupTargetLabel
-import app.opah.tv.ui.themeBrightnessLabel
-import app.opah.tv.ui.themeHueName
-import app.opah.tv.ui.themeIntensityLabel
 import app.opah.tv.ui.tvAlertOverlayDisplayDurationLabel
 import app.opah.tv.ui.unreviewedShownActivity
 import kotlinx.coroutines.Job
@@ -171,7 +166,6 @@ internal class NativeOpahController(
     private val focusMemory = mutableMapOf<String, String>()
     private var homeBookmark: NativeHomeBookmark? = null
     private var settingsPosition: NativeSettingsPosition? = null
-    private var connectionsPosition: NativeSettingsPosition? = null
     private var motionBookmark: NativeMotionSearchBookmark? = null
     private var appearancePosition: NativeAppearancePosition? = null
     private var alertSection = NativeAlertSection.ACTIVITY
@@ -191,9 +185,11 @@ internal class NativeOpahController(
     private var activeSurfaceKey: String? = null
     private var activeHome: NativeHomeSurface? = null
     private var activeSettings: NativeSettingsSurface? = null
-    private var activeConnections: NativeSettingsSurface? = null
     private var activeHomeAssistantSetup: NativeHomeAssistantSetup? = null
+    private var activeHomeAssistantPage: SettingsPage? = null
+    private var activeGuidedSetupPage: SettingsPage? = null
     private var activeGuidedSetup: NativeGuidedSetup? = null
+    private var notificationPreview: AndroidNotificationIdentity? = null
     private val homeAssistant by lazy { (activity.application as OpahApplication).container.homeAssistantConnection }
     private var activeAppearance: NativeAppearanceSurface? = null
     private var activeAbout: NativeAboutSurface? = null
@@ -252,7 +248,9 @@ internal class NativeOpahController(
             activity.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 homeAssistant.loadState()
                 homeAssistant.state.map { Triple(it.phase, it.enabled, it.deviceName) }.distinctUntilChanged().collectLatest {
-                    if (hasPresentedState && route.destination == NativeDestination.CONNECTIONS) render(currentState)
+                    if (hasPresentedState && route.destination == NativeDestination.SETTINGS &&
+                        route.settingsPage.nativeCategory in setOf(SettingsPage.CONNECTION, SettingsPage.TV_ALERTS)
+                    ) render(currentState)
                 }
             }
         }
@@ -286,6 +284,7 @@ internal class NativeOpahController(
     }
 
     fun stop() {
+        dismissNotificationPreview()
         activeGuidedSetup?.close()
         activeGuidedSetup = null
         homeAssistantStateJob?.cancel()
@@ -293,7 +292,8 @@ internal class NativeOpahController(
         hasPresentedState = false
         activeHomeAssistantSetup?.close()
         activeHomeAssistantSetup = null
-        activeConnections = null
+        activeHomeAssistantPage = null
+        activeGuidedSetupPage = null
         stateJob?.cancel()
         stateJob = null
         liveActionMessageJob?.cancel()
@@ -436,7 +436,6 @@ internal class NativeOpahController(
                 contentHost.removeAllViews()
             } else {
                 activeSettings?.refreshTheme()
-                activeConnections?.refreshTheme()
                 activeAppearance?.refreshTheme()
             }
             styleRoot()
@@ -452,7 +451,7 @@ internal class NativeOpahController(
                     route = when (request.destination) {
                         TvAlertNavigationDestination.ACTIVITY -> NativeRoute(NativeDestination.ACTIVITY)
                         TvAlertNavigationDestination.TV_ALERT_SETTINGS ->
-                            NativeRoute(NativeDestination.SETTINGS, SettingsPage.TV_ALERTS)
+                            NativeRoute(NativeDestination.SETTINGS, SettingsPage.NOTIFICATION_FRIGATE)
                     }
                     viewModel.consumeTvAlertNavigation(request.requestId)
                 }
@@ -467,8 +466,8 @@ internal class NativeOpahController(
             state.monitorMode != null -> showMonitor(state)
             state.cameraGroupView != null -> showCameraGroup(state)
             state.ptz.cameraName != null -> showPtz(state)
-            route.destination == NativeDestination.CONNECTIONS -> showConnections(state)
-            route.destination == NativeDestination.SETTINGS && state.privacy.available -> {
+            route.destination == NativeDestination.SETTINGS &&
+                (state.privacy.available || route.settingsPage.nativeCategory in setOf(SettingsPage.CONNECTION, SettingsPage.TV_ALERTS)) -> {
                 setNavigationVisible(true)
                 updateNavigationSelection()
                 updateNavigationAppearance(root.navigationOpen)
@@ -493,7 +492,7 @@ internal class NativeOpahController(
 
     private fun applyConfiguredStartupIfReady(state: Phase0UiState) {
         if (configuredStartupApplied) return
-        if (route.destination == NativeDestination.CONNECTIONS) {
+        if (route.destination == NativeDestination.SETTINGS && route.settingsPage != SettingsPage.MAIN) {
             configuredStartupApplied = true
             return
         }
@@ -624,7 +623,6 @@ internal class NativeOpahController(
             NativeDestination.HOME -> showHome(state)
             NativeDestination.ACTIVITY -> showActivity(state)
             NativeDestination.CLIPS -> showClips(state)
-            NativeDestination.CONNECTIONS -> showConnections(state)
             NativeDestination.SETTINGS -> showSettings(state)
         }
         if (pendingDocumentationCameraChooser) {
@@ -1307,36 +1305,61 @@ internal class NativeOpahController(
         }
     }
 
-    private fun activityTools(state: Phase0UiState): List<NativeBrowserTool> = when {
-        state.review.queueActive && activityPage in listOf(NativeActivityPage.NEW, NativeActivityPage.REVIEWED) -> {
+    private fun activityTools(state: Phase0UiState): List<NativeBrowserTool> {
+        if (state.review.queueActive && activityPage in listOf(NativeActivityPage.NEW, NativeActivityPage.REVIEWED)) {
             handlers["activity:leave-queue"] = { viewModel.endReviewQueue(); viewModel.loadReview() }
-            listOf(NativeBrowserTool("activity:leave-queue", "All activity", "Leave this review"))
+            return listOf(NativeBrowserTool("activity:leave-queue", "All activity", "Leave this review"))
         }
-        else -> when (activityPage) {
-        NativeActivityPage.NEW -> {
-            val count = state.review.unreviewedShownActivity().size
-            handlers["activity:mark-all"] = { showMarkShownActivityReviewedConfirmation(count) }
-            listOf(
+        val options = NativeBrowserTool("activity:options", "Options").takeUnless {
+            connectionsAccess(state.privacy) == ConnectionsAccess.UNAVAILABLE
+        }
+        handlers["activity:options"] = {
+            runProtectedAction(PinScope.SETTINGS, "settings", ::showActivityOptions)
+        }
+        return when (activityPage) {
+            NativeActivityPage.NEW -> {
+                val count = state.review.unreviewedShownActivity().size
+                handlers["activity:mark-all"] = { showMarkShownActivityReviewedConfirmation(count) }
+                listOfNotNull(
+                    NativeBrowserTool("activity:filter", "Filter", state.review.filters.summaryWithoutStatus()),
+                    NativeBrowserTool(
+                        "activity:mark-all",
+                        if (state.review.markingAllReviewed) "Saving" else "Mark all reviewed",
+                        if (count > 0) "$count new" else "Caught up",
+                        enabled = count > 0 && !state.review.hasPendingWrite(),
+                        primary = true,
+                    ),
+                    NativeBrowserTool("activity:refresh", "Refresh", enabled = !state.review.loading),
+                    options,
+                )
+            }
+            NativeActivityPage.REVIEWED -> listOfNotNull(
                 NativeBrowserTool("activity:filter", "Filter", state.review.filters.summaryWithoutStatus()),
-                NativeBrowserTool(
-                    "activity:mark-all",
-                    if (state.review.markingAllReviewed) "Saving" else "Mark all reviewed",
-                    if (count > 0) "$count new" else "Caught up",
-                    enabled = count > 0 && !state.review.hasPendingWrite(),
-                    primary = true,
-                ),
                 NativeBrowserTool("activity:refresh", "Refresh", enabled = !state.review.loading),
+                options,
             )
+            NativeActivityPage.HISTORY -> listOf(
+                NativeBrowserTool("activity:refresh", "Refresh", enabled = !state.history.loading),
+            )
+            NativeActivityPage.SEARCH -> emptyList()
+            NativeActivityPage.MOTION -> emptyList()
         }
-        NativeActivityPage.REVIEWED -> listOf(
-            NativeBrowserTool("activity:filter", "Filter", state.review.filters.summaryWithoutStatus()),
-            NativeBrowserTool("activity:refresh", "Refresh", enabled = !state.review.loading),
-        )
-        NativeActivityPage.HISTORY -> listOf(
-            NativeBrowserTool("activity:refresh", "Refresh", enabled = !state.history.loading),
-        )
-        NativeActivityPage.SEARCH -> emptyList()
-        NativeActivityPage.MOTION -> emptyList()
+    }
+
+    private fun showActivityOptions() {
+        if (route.destination != NativeDestination.ACTIVITY || connectionsAccess(currentState.privacy) != ConnectionsAccess.ALLOWED) return
+        val enabled = currentState.settings.autoMarkReviewedAfterPlayback
+        showChoiceDialog(
+            title = "Mark activity reviewed after playback",
+            explanation = "Change how Opah handles activity after you watch its recording",
+            choices = listOf(
+                Triple("manual", "Mark manually", if (!enabled) "Selected" else ""),
+                Triple("auto", "Mark after playback", if (enabled) "Selected" else ""),
+            ),
+        ) { selection ->
+            if (connectionsAccess(currentState.privacy) == ConnectionsAccess.ALLOWED) {
+                viewModel.updateAutoMarkReviewedAfterPlayback(selection == "auto")
+            }
         }
     }
 
@@ -2396,51 +2419,81 @@ internal class NativeOpahController(
     }
 
     private fun showSettings(state: Phase0UiState) {
-        if (
-            state.privacy.pinConfigured &&
-            PinScope.SETTINGS in state.privacy.protectedScopes &&
-            PinScope.SETTINGS !in state.privacy.unlockedScopes
-        ) {
-            val rows = listOf(
-                info(
-                    "settings:locked:info",
-                    "Settings are locked",
-                    "Enter the Opah PIN to open settings on this TV",
-                ),
-                action("settings:locked:unlock", "Unlock settings", value = "Enter PIN") {
-                    showPinDialog("Unlock settings") { pin -> viewModel.unlockPrivacy(pin) }
-                },
-            )
-            showList("settings:locked", "Settings", "Protected with your Opah PIN", rows)
+        val page = route.settingsPage
+        if (page != SettingsPage.NOTIFICATION_POPUPS) dismissNotificationPreview()
+        if (activeHomeAssistantPage != page) {
+            activeHomeAssistantSetup?.close()
+            activeHomeAssistantSetup = null
+            activeHomeAssistantPage = null
+        }
+        if (activeGuidedSetupPage != page) {
+            activeGuidedSetup?.close()
+            activeGuidedSetup = null
+            activeGuidedSetupPage = null
+        }
+        val access = connectionsAccess(state.privacy)
+        val connectionSettings = page.nativeCategory == SettingsPage.CONNECTION
+        val notificationSettings = page.nativeCategory == SettingsPage.TV_ALERTS
+        if ((connectionSettings || notificationSettings) && access == ConnectionsAccess.UNAVAILABLE) {
+            showList("settings:unavailable", "Settings", "Connection and notification settings are protected",
+                listOf(info("settings:waiting", "Settings are unavailable", "Wait for privacy settings to load, or reopen Opah")))
             return
         }
-        when (route.settingsPage) {
-            SettingsPage.MAIN -> showSettingsHub(state)
-            SettingsPage.UPDATE -> showUpdateSettings(state)
-            SettingsPage.APPEARANCE -> showAppearanceSettings(state)
-            SettingsPage.PLAYBACK -> showPlaybackSettings(state)
-            SettingsPage.PLAYBACK_TEST -> showPlaybackTest(state)
-            SettingsPage.CAMERA_DIAGNOSTICS -> showCameraDiagnostics(state)
-            SettingsPage.TV_ALERTS -> showTvAlerts(state)
-            SettingsPage.PRIVACY -> showPrivacy(state)
-            SettingsPage.STARTUP -> showStartup(state)
-            SettingsPage.CONNECTION -> {
-                openConnections(NativeConnectionPage.FRIGATE)
+        val settingsLocked = state.privacy.pinConfigured &&
+            PinScope.SETTINGS in state.privacy.protectedScopes &&
+            PinScope.SETTINGS !in state.privacy.unlockedScopes
+        if (settingsLocked || access == ConnectionsAccess.LOCKED) {
+            val canRegister = (page == SettingsPage.MAIN || connectionSettings) &&
+                access == ConnectionsAccess.LOCKED &&
+                (activity.application as OpahApplication).container.canStartHomeAssistantSetup()
+            if (canRegister && page == SettingsPage.CONNECTION_HOME_ASSISTANT) {
+                showHomeAssistantSettings(page)
+                return
             }
+            val setup = if (canRegister) listOf(
+                action("settings:ha-first-sign-in", "Set up Home Assistant", "Connect this TV for the first time") {
+                    openSettingsPage(SettingsPage.CONNECTION_HOME_ASSISTANT)
+                },
+            ) else emptyList()
+            showProtectedContentGate("settings", "Settings", "Enter the Opah PIN to open settings on this TV", setup)
+            return
+        }
+        when (page) {
+            SettingsPage.MAIN -> showSettingsHub(state)
+            SettingsPage.ABOUT, SettingsPage.UPDATE -> showAboutUpdates(state)
+            SettingsPage.APPEARANCE, SettingsPage.APPEARANCE_CUSTOM -> showAppearanceSettings(state)
+            SettingsPage.PLAYBACK_TROUBLESHOOT -> showPlaybackTroubleshooting(state)
+            SettingsPage.PLAYBACK, SettingsPage.STARTUP -> showPlaybackSettings(state)
+            SettingsPage.PLAYBACK_TEST -> showPlaybackTest(state)
+            SettingsPage.CAMERA_DIAGNOSTICS, SettingsPage.ADVANCED -> showCameraDiagnostics(state)
+            SettingsPage.TV_ALERTS -> showNotifications(state)
+            SettingsPage.NOTIFICATION_FRIGATE, SettingsPage.NOTIFICATION_FRIGATE_RULES -> showTvAlerts(state)
+            SettingsPage.NOTIFICATION_POPUPS -> showNotificationPopups(state)
+            SettingsPage.PRIVACY, SettingsPage.PRIVACY_PIN, SettingsPage.PRIVACY_AREAS,
+            SettingsPage.PRIVACY_CAMERAS -> showPrivacy(state)
+            SettingsPage.CONNECTION -> showConnections(state)
+            SettingsPage.CONNECTION_FRIGATE -> showSettingsList("connection:frigate", "Frigate", "Manage the connection to your cameras", connectionRows(state))
+            SettingsPage.CONNECTION_FRIGATE_ADVANCED -> showFrigateLiveRoute(state)
+            SettingsPage.CONNECTION_HOME_ASSISTANT, SettingsPage.NOTIFICATION_HOME_ASSISTANT -> showHomeAssistantSettings(page)
+            SettingsPage.CONNECTION_SETUP, SettingsPage.CONNECTION_CHECK -> showGuidedSetup(page)
             SettingsPage.SYSTEM -> showServer(state)
-            SettingsPage.ADVANCED -> showAdvanced(state)
-            SettingsPage.ABOUT -> showAbout(state)
+            SettingsPage.ABOUT_PROJECT -> showAboutProject(state)
         }
     }
 
-    private fun showProtectedContentGate(surfaceKey: String, title: String, description: String) {
+    private fun showProtectedContentGate(
+        surfaceKey: String,
+        title: String,
+        description: String,
+        extraRows: List<NativeRowModel> = emptyList(),
+    ) {
         val rows = listOf(
             info("protected:$surfaceKey:info", title, description),
             action("protected:$surfaceKey:unlock", "Unlock", "Use the PIN configured on this TV", "Enter PIN") {
                 showPinDialog("Unlock $surfaceKey") { pin -> viewModel.unlockPrivacy(pin) }
             },
         )
-        showList("protected:$surfaceKey", title, description, rows)
+        showList("protected:$surfaceKey", title, description, rows + extraRows)
     }
 
     private fun showTvAlertPrivacyGate(state: Phase0UiState) {
@@ -2500,24 +2553,16 @@ internal class NativeOpahController(
 
     private fun showSettingsHub(state: Phase0UiState) {
         val rows = buildList {
-            add(section("settings:overview:status", "At a glance", "Choose a category on the left to make changes"))
-            add(info("settings:overview:server", "Server", state.activeProfile?.apiBaseUrl ?: "Not connected", state.snapshot?.frigateVersion.orEmpty()))
-            add(info("settings:overview:cameras", "Cameras", "${state.snapshot?.cameras?.size ?: 0} available"))
-            add(info("settings:overview:alerts", "TV alerts", if (state.tvAlerts.enabled) "On" else "Off"))
-            add(info("settings:overview:privacy", "Privacy PIN", if (state.privacy.pinConfigured) "Configured" else "Not configured"))
-            add(action("settings:connections", "Connections", "Manage Frigate and Home Assistant", "Open") {
-                openConnections(NativeConnectionPage.FRIGATE)
-            })
             if (state.appUpdate.updateAvailable) {
                 add(action("settings:overview:update", "Opah update ready", "A newer version is ready to download", "Open") {
-                    openSettingsPage(SettingsPage.UPDATE)
+                    openSettingsPage(SettingsPage.ABOUT)
                 })
             }
         }
-        showSettingsPane("Settings", "Make Opah work the way you want", rows, state)
+        showSettingsPane("Settings", "Choose a setting on the left", rows, state)
     }
 
-    private fun showUpdateSettings(state: Phase0UiState) {
+    private fun showAboutUpdates(state: Phase0UiState) {
         val update = state.appUpdate
         val rows = buildList {
             add(
@@ -2525,14 +2570,17 @@ internal class NativeOpahController(
                     "update:version",
                     "Installed version",
                     displayedVersionName(),
-                    if (update.updateAvailable) "Update ready" else "Current",
+                    when {
+                        update.updateAvailable -> "Update ready"
+                        update.checkedOnce && update.errorMessage == null && !update.checking -> "Up to date"
+                        else -> ""
+                    },
                 ),
             )
             add(
                 action(
                     "update:check",
-                    if (update.checking) "Checking for updates" else "Check again",
-                    "Stay on this page while Opah checks",
+                    if (update.checking) "Checking for updates" else "Check for updates",
                     enabled = !update.checking,
                 ) { viewModel.checkForUpdates(forceRefresh = true) },
             )
@@ -2564,26 +2612,30 @@ internal class NativeOpahController(
                 }
             }
         }
-        showSettingsList("update", "Update", "See whether a newer version of Opah is ready", rows)
+        showSettingsList("about-updates", "About & updates", "", rows +
+            action("about:project", "Project information", "Privacy, credits, and legal information") {
+                openSettingsPage(SettingsPage.ABOUT_PROJECT)
+            })
     }
 
     private fun showAppearanceSettings(state: Phase0UiState) {
+        val customize = route.settingsPage == SettingsPage.APPEARANCE_CUSTOM
         val uiState = NativeAppearanceUiState(
             mode = state.settings.appearanceMode,
             colors = ThemeColorPolicy.sanitize(state.settings.customThemeColors),
             reducedMotion = state.settings.reducedMotion,
             highContrast = state.settings.highContrast,
-            subtleRoundedCorners = state.settings.subtleRoundedCorners,
             reducedTransparency = state.settings.reducedTransparency,
         )
-        val surface = activeAppearance ?: NativeAppearanceSurface(
+        val surface = activeAppearance?.takeIf { it.customEditor == customize } ?: NativeAppearanceSurface(
             activity = activity,
             initialState = uiState,
             onMode = viewModel::updateAppearance,
             onColors = viewModel::updateCustomTheme,
             onReducedMotion = viewModel::updateReducedMotion,
             onHighContrast = viewModel::updateHighContrast,
-            onSubtleRoundedCorners = viewModel::updateSubtleRoundedCorners,
+            customEditor = customize,
+            onCustomize = { openSettingsPage(SettingsPage.APPEARANCE_CUSTOM) },
             onReducedTransparency = viewModel::updateReducedTransparency,
             onFocused = { key, view ->
                 focusMemory[route.focusMemoryKey] = key
@@ -2592,8 +2644,8 @@ internal class NativeOpahController(
         )
         surface.update(uiState)
         showSettingsPane(
-            title = "Appearance",
-            subtitle = "Preview and tune the look directly",
+            title = if (customize) "Customize theme" else "Appearance",
+            subtitle = "",
             rows = emptyList(),
             state = state,
             detailContent = surface,
@@ -2602,235 +2654,63 @@ internal class NativeOpahController(
         appearancePosition?.let { position -> surface.restorePosition(position); appearancePosition = null }
     }
 
-    @Suppress("unused")
-    private fun showAppearanceSettingsLegacy(state: Phase0UiState) {
-        val rows = buildList {
-            add(
-                NativeRowModel(
-                    key = "appearance:preview",
-                    title = "Live preview",
-                    kind = NativeRowKind.THEME_PREVIEW,
-                    enabled = false,
-                    previewAccent = NativeTheme.palette.focus,
-                    previewBackground = NativeTheme.palette.background,
-                ),
-            )
-            add(section("appearance:theme", "Color theme", "Choose a comfortable look for this TV"))
-            AppearanceMode.entries.forEach { mode ->
-                add(
-                    choice(
-                        "appearance:mode:${mode.name}",
-                        if (mode == AppearanceMode.CUSTOM) {
-                            "Custom colors"
-                        } else {
-                            mode.name.lowercase().replaceFirstChar(Char::uppercase)
-                        },
-                        selected = state.settings.appearanceMode == mode,
-                        description = if (mode == AppearanceMode.CUSTOM) {
-                            "Adjust the accent and background yourself"
-                        } else {
-                            ""
-                        },
-                    ) { viewModel.updateAppearance(mode) },
-                )
-            }
-            if (state.settings.appearanceMode == AppearanceMode.CUSTOM) {
-                val safeColors = ThemeColorPolicy.sanitize(state.settings.customThemeColors)
-                val presets = listOf(
-                    "Coral" to CustomThemeColors(0xFFFF7048.toInt(), 0xFF07111F.toInt()),
-                    "Ocean" to CustomThemeColors(0xFF53B7FF.toInt(), 0xFF071522.toInt()),
-                    "Forest" to CustomThemeColors(0xFF65D68A.toInt(), 0xFF08170F.toInt()),
-                    "Plum" to CustomThemeColors(0xFFD29BFF.toInt(), 0xFF180D20.toInt()),
-                    "Sunset" to CustomThemeColors(0xFFFFB454.toInt(), 0xFF211108.toInt()),
-                    "Slate" to CustomThemeColors(0xFF7DD8D2.toInt(), 0xFF11171A.toInt()),
-                )
-                val accentHsl = ThemeColorPolicy.toHsl(safeColors.accentArgb)
-                val backgroundHsl = ThemeColorPolicy.toHsl(safeColors.backgroundArgb)
-                add(section("appearance:adjust", "Customize colors", "Use left and right to see each change immediately"))
-                add(adjustment(
-                    key = "appearance:adjust:accent-hue",
-                    title = "Accent color",
-                    value = themeHueName(accentHsl.hue),
-                    adjustmentRange = NativeAdjustmentRange(0f, 359f, accentHsl.hue.toFloat(), wraps = true),
-                    indicatorColor = safeColors.accentArgb,
-                    decrease = {
-                        viewModel.updateCustomTheme(
-                            safeColors.copy(accentArgb = ThemeColorPolicy.adjustHue(safeColors.accentArgb, -10)),
-                        )
-                    },
-                    increase = {
-                        viewModel.updateCustomTheme(
-                            safeColors.copy(accentArgb = ThemeColorPolicy.adjustHue(safeColors.accentArgb, 10)),
-                        )
-                    },
-                ))
-                add(adjustment(
-                    key = "appearance:adjust:accent-strength",
-                    title = "Accent intensity",
-                    value = themeIntensityLabel(accentHsl.saturation),
-                    adjustmentRange = NativeAdjustmentRange(0f, 100f, accentHsl.saturation.toFloat()),
-                    indicatorColor = safeColors.accentArgb,
-                    decrease = {
-                        viewModel.updateCustomTheme(
-                            safeColors.copy(accentArgb = ThemeColorPolicy.adjustSaturation(safeColors.accentArgb, -5)),
-                        )
-                    },
-                    increase = {
-                        viewModel.updateCustomTheme(
-                            safeColors.copy(accentArgb = ThemeColorPolicy.adjustSaturation(safeColors.accentArgb, 5)),
-                        )
-                    },
-                ))
-                add(adjustment(
-                    key = "appearance:adjust:accent-brightness",
-                    title = "Accent brightness",
-                    value = themeBrightnessLabel(accentHsl.lightness),
-                    adjustmentRange = NativeAdjustmentRange(minOf(5f, accentHsl.lightness.toFloat()), maxOf(95f, accentHsl.lightness.toFloat()), accentHsl.lightness.toFloat()),
-                    indicatorColor = safeColors.accentArgb,
-                    decrease = {
-                        viewModel.updateCustomTheme(
-                            safeColors.copy(accentArgb = ThemeColorPolicy.adjustLightness(safeColors.accentArgb, -5)),
-                        )
-                    },
-                    increase = {
-                        viewModel.updateCustomTheme(
-                            safeColors.copy(accentArgb = ThemeColorPolicy.adjustLightness(safeColors.accentArgb, 5)),
-                        )
-                    },
-                ))
-                add(adjustment(
-                    key = "appearance:adjust:background-hue",
-                    title = "Background tint",
-                    value = themeHueName(backgroundHsl.hue),
-                    adjustmentRange = NativeAdjustmentRange(0f, 359f, backgroundHsl.hue.toFloat(), wraps = true),
-                    indicatorColor = safeColors.backgroundArgb,
-                    decrease = {
-                        viewModel.updateCustomTheme(
-                            safeColors.copy(backgroundArgb = ThemeColorPolicy.adjustHue(safeColors.backgroundArgb, -10)),
-                        )
-                    },
-                    increase = {
-                        viewModel.updateCustomTheme(
-                            safeColors.copy(backgroundArgb = ThemeColorPolicy.adjustHue(safeColors.backgroundArgb, 10)),
-                        )
-                    },
-                ))
-                add(adjustment(
-                    key = "appearance:adjust:background-strength",
-                    title = "Background intensity",
-                    value = themeIntensityLabel(backgroundHsl.saturation),
-                    adjustmentRange = NativeAdjustmentRange(0f, 100f, backgroundHsl.saturation.toFloat()),
-                    indicatorColor = safeColors.backgroundArgb,
-                    decrease = {
-                        viewModel.updateCustomTheme(
-                            safeColors.copy(backgroundArgb = ThemeColorPolicy.adjustSaturation(safeColors.backgroundArgb, -5)),
-                        )
-                    },
-                    increase = {
-                        viewModel.updateCustomTheme(
-                            safeColors.copy(backgroundArgb = ThemeColorPolicy.adjustSaturation(safeColors.backgroundArgb, 5)),
-                        )
-                    },
-                ))
-                add(adjustment(
-                    key = "appearance:adjust:background-brightness",
-                    title = "Background brightness",
-                    value = themeBrightnessLabel(backgroundHsl.lightness),
-                    adjustmentRange = NativeAdjustmentRange(minOf(5f, backgroundHsl.lightness.toFloat()), maxOf(95f, backgroundHsl.lightness.toFloat()), backgroundHsl.lightness.toFloat()),
-                    indicatorColor = safeColors.backgroundArgb,
-                    decrease = {
-                        viewModel.updateCustomTheme(
-                            safeColors.copy(backgroundArgb = ThemeColorPolicy.adjustLightness(safeColors.backgroundArgb, -3)),
-                        )
-                    },
-                    increase = {
-                        viewModel.updateCustomTheme(
-                            safeColors.copy(backgroundArgb = ThemeColorPolicy.adjustLightness(safeColors.backgroundArgb, 3)),
-                        )
-                    },
-                ))
-                add(section("appearance:presets", "Optional starting styles", "Choose one only if you want a ready-made combination"))
-                presets.forEach { (name, colors) ->
-                    val sanitizedPreset = ThemeColorPolicy.sanitize(colors)
-                    add(
-                        choice(
-                            "appearance:preset:${name.lowercase()}",
-                            name,
-                            selected = safeColors == sanitizedPreset,
-                            description = "Ready-made custom colors",
-                        ) { viewModel.updateCustomTheme(sanitizedPreset) },
-                    )
+    private fun showPlaybackSettings(state: Phase0UiState) {
+        val qualityOptions = mapOf(
+            StreamPreference.AUTOMATIC to "Automatic",
+            StreamPreference.MAIN to "Best quality",
+            StreamPreference.LOW_BANDWIDTH to "Low bandwidth",
+        )
+        val rows = listOf(
+            action("playback:startup", "Open Opah to", value = startupDestinations(state)[state.settings.startupTarget] ?: "Cameras") {
+                val choices = startupDestinations(currentState)
+                val selected = currentState.settings.startupTarget
+                showChoiceDialog("Open Opah to", "Choose what opens when you start Opah",
+                    choices.entries.mapIndexed { index, (target, title) ->
+                        Triple(index.toString(), title, if (target == selected) "Selected" else "")
+                    }) { selection ->
+                    val target = choices.keys.elementAt(selection.toInt())
+                    if (target in startupDestinations(currentState)) viewModel.updateStartupTarget(target)
                 }
-            }
-            add(section("appearance:accessibility", "Accessibility"))
-            add(toggle("appearance:motion", "Reduce motion", state.settings.reducedMotion) {
-                viewModel.updateReducedMotion(!state.settings.reducedMotion)
-            })
-            add(toggle("appearance:contrast", "High contrast", state.settings.highContrast) {
-                viewModel.updateHighContrast(!state.settings.highContrast)
-            })
-        }
-        showSettingsList("appearance", "Appearance", "Choose how Opah looks", rows)
+            },
+            toggle("playback:muted", "Start live video muted", state.settings.startLiveMuted) {
+                viewModel.updateStartLiveMuted(!state.settings.startLiveMuted)
+            },
+            action("playback:quality", "Default live quality", value = qualityOptions.getValue(state.settings.streamPreference)) {
+                showChoiceDialog("Default live quality", "Automatic works best for most people",
+                    qualityOptions.map { (preference, title) ->
+                        Triple(preference.name, title, if (preference == currentState.settings.streamPreference) "Selected" else "")
+                    }) { choice -> viewModel.updateStreamPreference(StreamPreference.valueOf(choice)) }
+            },
+            action("playback:troubleshoot", "Troubleshoot playback", "Check cameras and adjust playback connections") {
+                openSettingsPage(SettingsPage.PLAYBACK_TROUBLESHOOT)
+            },
+        )
+        showSettingsList("playback", "Cameras & playback", "", rows)
     }
 
-    private fun showPlaybackSettings(state: Phase0UiState) {
+    private fun showPlaybackTroubleshooting(state: Phase0UiState) {
         val rows = buildList {
-            add(section("playback:quality", "Default live video", "Automatic works best for most people"))
-            StreamPreference.entries.forEach { preference ->
-                val label = when (preference) {
-                    StreamPreference.AUTOMATIC -> "Automatic"
-                    StreamPreference.MAIN -> "Best quality"
-                    StreamPreference.LOW_BANDWIDTH -> "Low bandwidth"
-                }
-                add(
-                    choice(
-                        "playback:stream:${preference.name}",
-                        label,
-                        selected = state.settings.streamPreference == preference,
-                    ) { viewModel.updateStreamPreference(preference) },
-                )
-            }
-            add(section("playback:opening", "When video opens", "These choices apply next time video opens"))
+            add(action("playback:test", "Check camera compatibility", "Find a reliable way to play a camera on this TV") {
+                openSettingsPage(SettingsPage.PLAYBACK_TEST)
+            })
             if (state.savedProfile != null && state.savedProfile == state.activeProfile &&
                 app.opah.tv.data.automaticLiveRecoveryBinding(state.savedProfile) != null &&
-                state.snapshot?.frigateVersion?.let { app.opah.tv.playback.supportsAuthorizedHttpsLive(it) } == true) {
+                state.snapshot?.frigateVersion?.let { app.opah.tv.playback.supportsAuthorizedHttpsLive(it) } == true
+            ) {
                 add(toggle("playback:automatic-connection", "Try another connection automatically",
                     state.automaticLiveRecovery.enabledFor(state.savedProfile),
-                    description = "For this server · When supported, try another connection before using a smaller stream") {
+                    description = "For this server · Try another connection before using a smaller stream") {
                     viewModel.updateAutomaticLiveRecovery(!state.automaticLiveRecovery.enabledFor(state.savedProfile))
                 })
             }
             add(toggle("playback:tcp", "Prefer a reliable connection", state.settings.preferRtpTcp) {
                 viewModel.updatePreferRtpTcp(!state.settings.preferRtpTcp)
             })
-            add(toggle("playback:muted", "Start live video muted", state.settings.startLiveMuted) {
-                viewModel.updateStartLiveMuted(!state.settings.startLiveMuted)
+            add(action("playback:diagnostics", "Playback diagnostics", "See technical details for cameras and this TV") {
+                openSettingsPage(SettingsPage.CAMERA_DIAGNOSTICS)
             })
-            add(toggle("playback:details", "Show playback details", state.settings.diagnosticsEnabled) {
-                viewModel.updateDiagnosticsEnabled(!state.settings.diagnosticsEnabled)
-            })
-            add(toggle("playback:reviewed", "Mark activity reviewed after playback", state.settings.autoMarkReviewedAfterPlayback) {
-                viewModel.updateAutoMarkReviewedAfterPlayback(!state.settings.autoMarkReviewedAfterPlayback)
-            })
-            add(section("playback:tools", "Camera tools"))
-            add(
-                action(
-                    "playback:test",
-                    "Check camera compatibility",
-                    "Opah safely tries playback choices and remembers the verified choice for that camera",
-                    "Open",
-                ) { openSettingsPage(SettingsPage.PLAYBACK_TEST) },
-            )
-            add(
-                action(
-                    "playback:diagnostics",
-                    "Diagnostic data",
-                    "Technical camera and decoder details for advanced troubleshooting",
-                    "Open",
-                ) { openSettingsPage(SettingsPage.CAMERA_DIAGNOSTICS) },
-            )
         }
-        showSettingsList("playback", "Cameras and Playback", "Choose how cameras and video start and play", rows)
+        showSettingsList("playback:troubleshooting", "Troubleshoot playback", "", rows)
     }
 
     private fun showPlaybackTest(state: Phase0UiState) {
@@ -2927,13 +2807,14 @@ internal class NativeOpahController(
                 }
             }
             state.device?.let { device ->
-                add(section("camera-diagnostics:device", "This TV", "${device.manufacturer} ${device.model}"))
+                add(section("camera-diagnostics:device", "This TV",
+                    "${device.manufacturer} ${device.model} · Android ${device.androidRelease} · API ${device.apiLevel}"))
                 device.codecs.forEachIndexed { index, codec ->
                     add(
                         info(
                             "camera-diagnostics:codec:$index",
-                            codec.mimeType,
-                            "${codec.decoders.size} decoder choices${if (codec.hasHardwareDecoder) " • hardware available" else ""}",
+                            codec.label,
+                            "${codec.mimeType} · ${codec.decoders.size} decoder choices${if (codec.hasHardwareDecoder) " • hardware available" else ""}",
                             codec.decoders.joinToString("\n") { decoder ->
                                 buildList {
                                     add(decoder.name)
@@ -2941,6 +2822,7 @@ internal class NativeOpahController(
                                         decoder.hardwareAccelerated == true -> add("hardware")
                                         decoder.softwareOnly == true -> add("software")
                                     }
+                                    if (decoder.vendor == true) add("vendor")
                                     if (decoder.adaptivePlayback) add("adaptive")
                                     decoder.maxSupportedInstances?.let { add("up to $it instances") }
                                 }.joinToString(" • ")
@@ -2949,8 +2831,157 @@ internal class NativeOpahController(
                     )
                 }
             }
+            state.snapshot?.warnings.orEmpty().forEachIndexed { index, warning ->
+                add(info("camera-diagnostics:warning:$index", "Server warning", warning))
+            }
+            add(action("camera-diagnostics:refresh", if (state.loading) "Refreshing" else "Refresh diagnostics",
+                enabled = !state.loading) { viewModel.refresh() })
         }
-        showSettingsList("camera-diagnostics", "Diagnostic data", "Camera, stream, and TV playback details", rows)
+        showSettingsList("camera-diagnostics", "Playback diagnostics", "Camera, stream, and TV playback details", rows)
+    }
+
+    private fun showNotifications(state: Phase0UiState) {
+        val pause = state.notificationPause
+        val rows = buildList {
+            add(action("notifications:pause", "Pause all notifications", notificationPauseLabel(pause),
+                enabled = pause.available && !state.notificationPauseBusy) {
+                showChoiceDialog("Pause all notifications", "Temporarily pause Frigate and Home Assistant on this TV",
+                    listOf(Triple("15", "15 minutes", ""), Triple("60", "1 hour", ""))) { minutes ->
+                    viewModel.changeSharedNotificationPause(minutes.toInt())
+                }
+            })
+            if (pause.paused || !pause.available) {
+                add(action("notifications:resume", "Resume notifications", enabled = !state.notificationPauseBusy) {
+                    viewModel.changeSharedNotificationPause(null)
+                })
+            }
+            state.notificationPauseError?.let { add(info("notifications:pause-error", "Pause needs attention", it)) }
+            if (state.savedProfile != null || state.activeProfile != null || state.tvAlerts.enabled) {
+                add(action("notifications:frigate", "Frigate alerts", value = if (state.tvAlerts.enabled) "On" else "Off") {
+                    openSettingsPage(SettingsPage.NOTIFICATION_FRIGATE)
+                })
+            }
+            if (homeAssistant.hasSession()) {
+                add(action("notifications:home-assistant", "Home Assistant messages",
+                    value = if (homeAssistant.state.value.enabled) "On" else "Off") {
+                    openSettingsPage(SettingsPage.NOTIFICATION_HOME_ASSISTANT)
+                })
+            }
+            add(action("notifications:pop-ups", "TV pop-ups",
+                value = tvAlertOverlayDisplayDurationLabel(state.tvAlerts.overlaySettings.displayDurationSeconds)) {
+                openSettingsPage(SettingsPage.NOTIFICATION_POPUPS)
+            })
+        }
+        showSettingsList("notifications", "Notifications", "Choose what appears on this TV", rows)
+    }
+
+    private fun showNotificationPopups(state: Phase0UiState) {
+        val alerts = state.tvAlerts
+        val displaySeconds = alerts.overlaySettings.displayDurationSeconds
+        val rows = buildList {
+            add(adjustment(
+                key = "alerts:duration",
+                title = "Display time",
+                description = if (displaySeconds == 0) {
+                    "Off still allows Android notifications"
+                } else {
+                    "Applies to both Frigate and Home Assistant"
+                },
+                value = tvAlertOverlayDisplayDurationLabel(displaySeconds),
+                adjustmentRange = NativeAdjustmentRange(
+                    app.opah.tv.notifications.android.TV_ALERT_OVERLAY_MIN_DISPLAY_SECONDS.toFloat(),
+                    app.opah.tv.notifications.android.TV_ALERT_OVERLAY_MAX_DISPLAY_SECONDS.toFloat(),
+                    displaySeconds.toFloat(),
+                ),
+                decrease = {
+                    viewModel.setTvAlertOverlayDisplayDurationSeconds(
+                        adjustTvAlertOverlayDisplayDuration(displaySeconds, -1),
+                    )
+                },
+                increase = {
+                    viewModel.setTvAlertOverlayDisplayDurationSeconds(
+                        adjustTvAlertOverlayDisplayDuration(displaySeconds, 1),
+                    )
+                },
+            ))
+            val positions = TvAlertOverlayVerticalPosition.entries.flatMap { vertical ->
+                TvAlertOverlayHorizontalPosition.entries.map { horizontal -> vertical to horizontal }
+            }
+            val current = alerts.overlaySettings.verticalPosition to alerts.overlaySettings.horizontalPosition
+            val currentIndex = positions.indexOf(current)
+            fun label(position: Pair<TvAlertOverlayVerticalPosition, TvAlertOverlayHorizontalPosition>) =
+                "${position.first.name.humanize()} ${position.second.name.lowercase()}"
+            add(action("alerts:position", "Position", value = label(current)) {
+                showChoiceDialog("Pop-up position", "Choose where pop-ups appear",
+                    positions.mapIndexed { index, position ->
+                        Triple(index.toString(), label(position), if (index == currentIndex) "Selected" else "")
+                    }) { selected ->
+                    val (vertical, horizontal) = positions[selected.toInt()]
+                    viewModel.setTvAlertOverlayPosition(vertical, horizontal)
+                }
+            })
+            add(
+                action(
+                    "alerts:image",
+                    "Photo size",
+                    "Choose how much screen space the camera photo uses",
+                    alerts.overlaySettings.imageSize.name.humanize(),
+                ) {
+                    showChoiceDialog(
+                        "Photo size",
+                        "Current: ${alerts.overlaySettings.imageSize.name.humanize()}",
+                        TvAlertOverlayImageSize.entries.map { size ->
+                            Triple(
+                                size.name,
+                                size.name.humanize(),
+                                if (size == alerts.overlaySettings.imageSize) "Selected" else "",
+                            )
+                        },
+                    ) { selected ->
+                        viewModel.setTvAlertOverlayImageSize(TvAlertOverlayImageSize.valueOf(selected))
+                    }
+                },
+            )
+            if (displaySeconds > 0) {
+                add(action("alerts:overlay", "Allow TV pop-ups", value = if (alerts.overlayPermissionGranted) "Allowed" else "Open") {
+                    actions.onOpenOverlaySettings()
+                })
+                if (alerts.overlayPermissionGranted && !state.notificationPause.paused) {
+                    add(action("alerts:test", "Preview a TV pop-up", "Show a sample from Opah") { showNotificationPreview() })
+                }
+            }
+            add(action("alerts:android", "Android notification settings") { actions.onOpenNotificationSettings() })
+            if (alerts.enabled && alerts.deliveryStatus != TvAlertDeliveryStatus.AVAILABLE) {
+                val deliveryMessage = when (alerts.deliveryStatus) {
+                    TvAlertDeliveryStatus.NOTIFICATION_PERMISSION_REQUIRED -> "Android notification permission is required"
+                    TvAlertDeliveryStatus.PARTIALLY_BLOCKED -> "One Frigate notification channel is blocked"
+                    TvAlertDeliveryStatus.BLOCKED -> "Frigate notifications are blocked in Android settings"
+                    TvAlertDeliveryStatus.AVAILABLE -> "Available"
+                }
+                add(info("alerts:delivery", "Frigate notification delivery", deliveryMessage))
+                add(action("alerts:delivery:refresh", "Check notification permission again") {
+                    viewModel.refreshTvAlertDeliveryStatus()
+                })
+            }
+        }
+        showSettingsList("notifications:pop-ups", "TV pop-ups", "Shared by Frigate and Home Assistant", rows)
+    }
+
+    private fun showNotificationPreview() {
+        val container = (activity.application as OpahApplication).container
+        dismissNotificationPreview()
+        val preview = AndroidNotificationIdentity("opah_popup_preview_${java.util.UUID.randomUUID()}", 3)
+        notificationPreview = preview
+        container.showSetupPreview(preview, currentState.settings, active = {
+            notificationPreview == preview && route.settingsPage == SettingsPage.NOTIFICATION_POPUPS &&
+                activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+        }, shown = {})
+    }
+
+    private fun dismissNotificationPreview() {
+        val preview = notificationPreview ?: return
+        notificationPreview = null
+        (activity.application as OpahApplication).container.dismissSetupPreview(preview)
     }
 
     private fun showTvAlerts(state: Phase0UiState) {
@@ -2989,9 +3020,6 @@ internal class NativeOpahController(
                 add(info("alerts:saving", "Saving TV alert settings", "Controls will be ready again in a moment"))
             }
             alerts.statusMessage?.let { add(info("alerts:status", "TV alerts", it)) }
-            add(action("alerts:shared-pause", "Pause all TV notifications", notificationPauseLabel(state.notificationPause)) {
-                openConnections(NativeConnectionPage.NOTIFICATIONS)
-            })
             alerts.errorMessage?.let { add(info("alerts:error", "TV alerts need attention", it)) }
             add(
                 toggle(
@@ -3189,6 +3217,13 @@ internal class NativeOpahController(
                 add(action("alerts:snooze:clear", "Clear snooze", value = "Resume") { viewModel.clearTvAlertSnoozes() })
             }
             add(section("alerts:display", "On-screen alert", "Controls the compact alert shown over other TV apps"))
+            if (alerts.enabled) {
+                add(action("alerts:test:frigate", "Test Frigate notifications", "Show a fictional camera alert") {
+                    showChoiceDialog("Test Frigate notifications", "Opah will briefly go to the background", listOf(
+                        Triple("text", "Text sample", ""), Triple("photo", "Photo sample", ""),
+                    )) { selected -> actions.onTestTvAlert(selected == "photo") }
+                })
+            }
             add(toggle("alerts:interactive", "Interactive Frigate alerts", alerts.overlaySettings.interactiveFrigateAlerts,
                 "Use the remote to act on alerts; remote control moves temporarily from your current app") {
                 if (alerts.overlaySettings.interactiveFrigateAlerts) viewModel.setInteractiveFrigateAlerts(false)
@@ -3202,118 +3237,15 @@ internal class NativeOpahController(
                 alerts.overlaySettings.inlineRecordingPreviews, "Choose Preview recording to watch here; previews start muted") {
                 viewModel.setInlineRecordingPreviews(!alerts.overlaySettings.inlineRecordingPreviews)
             })
-            val displaySeconds = alerts.overlaySettings.displayDurationSeconds
-            add(adjustment(
-                key = "alerts:duration",
-                title = "Notification display time",
-                description = if (displaySeconds == 0) {
-                    "Off skips the on-screen pop-up; the Android notification is still kept"
-                } else {
-                    "The compact pop-up closes automatically after this time"
-                },
-                value = tvAlertOverlayDisplayDurationLabel(displaySeconds),
-                adjustmentRange = NativeAdjustmentRange(
-                    app.opah.tv.notifications.android.TV_ALERT_OVERLAY_MIN_DISPLAY_SECONDS.toFloat(),
-                    app.opah.tv.notifications.android.TV_ALERT_OVERLAY_MAX_DISPLAY_SECONDS.toFloat(),
-                    displaySeconds.toFloat(),
-                ),
-                decrease = {
-                    viewModel.setTvAlertOverlayDisplayDurationSeconds(
-                        adjustTvAlertOverlayDisplayDuration(displaySeconds, -1),
-                    )
-                },
-                increase = {
-                    viewModel.setTvAlertOverlayDisplayDurationSeconds(
-                        adjustTvAlertOverlayDisplayDuration(displaySeconds, 1),
-                    )
-                },
-            ))
-            add(
-                action(
-                    "alerts:vertical",
-                    "Vertical location",
-                    "Choose where the alert appears from top to bottom",
-                    alerts.overlaySettings.verticalPosition.name.humanize(),
-                ) {
-                    showChoiceDialog(
-                        "Vertical location",
-                        "Current: ${alerts.overlaySettings.verticalPosition.name.humanize()}",
-                        TvAlertOverlayVerticalPosition.entries.map { position ->
-                            Triple(
-                                position.name,
-                                position.name.humanize(),
-                                if (position == alerts.overlaySettings.verticalPosition) "Selected" else "",
-                            )
-                        },
-                    ) { selected ->
-                        viewModel.setTvAlertOverlayVerticalPosition(TvAlertOverlayVerticalPosition.valueOf(selected))
-                    }
-                },
-            )
-            add(
-                action(
-                    "alerts:horizontal",
-                    "Horizontal location",
-                    "Choose where the alert appears from left to right",
-                    alerts.overlaySettings.horizontalPosition.name.humanize(),
-                ) {
-                    showChoiceDialog(
-                        "Horizontal location",
-                        "Current: ${alerts.overlaySettings.horizontalPosition.name.humanize()}",
-                        TvAlertOverlayHorizontalPosition.entries.map { position ->
-                            Triple(
-                                position.name,
-                                position.name.humanize(),
-                                if (position == alerts.overlaySettings.horizontalPosition) "Selected" else "",
-                            )
-                        },
-                    ) { selected ->
-                        viewModel.setTvAlertOverlayHorizontalPosition(TvAlertOverlayHorizontalPosition.valueOf(selected))
-                    }
-                },
-            )
-            add(
-                action(
-                    "alerts:image",
-                    "Photo size",
-                    "Choose how much screen space the camera photo uses",
-                    alerts.overlaySettings.imageSize.name.humanize(),
-                ) {
-                    showChoiceDialog(
-                        "Photo size",
-                        "Current: ${alerts.overlaySettings.imageSize.name.humanize()}",
-                        TvAlertOverlayImageSize.entries.map { size ->
-                            Triple(
-                                size.name,
-                                size.name.humanize(),
-                                if (size == alerts.overlaySettings.imageSize) "Selected" else "",
-                            )
-                        },
-                    ) { selected ->
-                        viewModel.setTvAlertOverlayImageSize(TvAlertOverlayImageSize.valueOf(selected))
-                    }
-                },
-            )
-            add(action("alerts:test:text", "Send test without photo", value = "Test") { actions.onTestTvAlert(false) })
-            add(action("alerts:test:image", "Send test with photo", value = "Test") { actions.onTestTvAlert(true) })
-            add(action("alerts:android", "Android notification settings", value = "Open") {
-                actions.onOpenNotificationSettings()
-            })
-            add(action("alerts:overlay", "Permission to appear over other apps", value = if (alerts.overlayPermissionGranted) "Allowed" else "Open") {
-                actions.onOpenOverlaySettings()
-            })
-            if (alerts.enabled && alerts.deliveryStatus != TvAlertDeliveryStatus.AVAILABLE) {
-                val deliveryMessage = when (alerts.deliveryStatus) {
-                    TvAlertDeliveryStatus.NOTIFICATION_PERMISSION_REQUIRED -> "Android notification permission is required"
-                    TvAlertDeliveryStatus.PARTIALLY_BLOCKED -> "One TV alert channel is blocked"
-                    TvAlertDeliveryStatus.BLOCKED -> "TV alerts are blocked in Android settings"
-                    TvAlertDeliveryStatus.AVAILABLE -> "Available"
-                }
-                add(info("alerts:delivery", "Notification delivery", deliveryMessage))
-                add(action("alerts:delivery:refresh", "Check notification permission again", value = "Check") {
-                    viewModel.refreshTvAlertDeliveryStatus()
-                })
             }
+        if (route.settingsPage == SettingsPage.NOTIFICATION_FRIGATE) {
+            val summaryRows = rows.filter { alertSectionForKey(it.key) == null ||
+                it.key == "alerts:which" || it.key.startsWith("alerts:mode:") }
+            showSettingsList("tv-alerts", "Frigate alerts", "Choose when camera activity appears", summaryRows +
+                action("alerts:customize", "Customize Frigate alerts", "Cameras, quiet times, and previews") {
+                    openSettingsPage(SettingsPage.NOTIFICATION_FRIGATE_RULES)
+                })
+            return
         }
         val tabs = NativeAlertSection.entries.map { section ->
             val key = "alerts:section:${section.name}"
@@ -3321,8 +3253,9 @@ internal class NativeOpahController(
             NativeBrowserTab(key, section.label, alertSection == section)
         }
         showSettingsList(
-            "tv-alerts", "TV alerts", "See important activity while watching TV",
-            rows.filter { alertSectionForKey(it.key)?.let { section -> section == alertSection } ?: true },
+            "tv-alerts:customize", "Customize Frigate alerts", "Choose cameras, quiet times, and previews",
+            rows.filter { (alertSectionForKey(it.key) == alertSection || it.key in setOf("alerts:saving", "alerts:status", "alerts:error")) &&
+                it.key != "alerts:which" && !it.key.startsWith("alerts:mode:") },
             tabs,
         )
     }
@@ -3350,231 +3283,225 @@ internal class NativeOpahController(
             )
             return
         }
+        val page = route.settingsPage
         val rows = buildList {
             privacy.statusMessage?.let { add(info("privacy:status", "Privacy", it)) }
             privacy.errorMessage?.let { add(info("privacy:error", "Privacy needs attention", it)) }
             if (!privacy.pinConfigured) {
-                add(
-                    info(
-                        "privacy:intro",
-                        "Protect selected areas",
-                        "Create a 4 to 8 digit PIN, then choose which cameras and app areas it protects",
-                    ),
-                )
-                add(action("privacy:create", "Create PIN", value = "Open keypad") { showCreatePinFlow() })
-            } else {
-                add(
-                    action(
-                        "privacy:selection-lock",
-                        if (privacy.pinSelectionsUnlocked) "Lock selections" else "Unlock selections",
-                        if (privacy.pinSelectionsUnlocked) {
-                            "Stop changes to the choices below"
-                        } else {
-                            "Enter the PIN before changing protected choices"
-                        },
-                        if (privacy.pinSelectionsUnlocked) "Lock" else "Unlock",
-                    ) {
-                        if (privacy.pinSelectionsUnlocked) {
+                add(action("privacy:create", "Create PIN", "Choose a 4 to 8 digit PIN for this TV", enabled = !privacy.busy) {
+                    showCreatePinFlow()
+                })
+                return@buildList
+            }
+            when (page) {
+                SettingsPage.PRIVACY_PIN -> {
+                    if (privacy.pinSelectionsUnlocked) {
+                        add(action("privacy:selection-lock", "Lock now", "Lock the app areas you chose", enabled = !privacy.busy) {
                             viewModel.lockPrivacyNow()
-                        } else {
-                            showPinDialog("Unlock selections") { pin -> viewModel.unlockPrivacy(pin) }
-                        }
-                    },
-                )
-                add(section("privacy:areas", "Protected app areas", "Choose what requires the PIN"))
-                listOf(
-                    PinScope.SETTINGS to "Settings and connection",
-                    PinScope.ADMINISTRATIVE_ACTIONS to "Administrative changes",
-                    PinScope.DESTRUCTIVE_ACTIONS to "Delete and destructive actions",
-                    PinScope.CLIPS_AND_INCIDENTS to "Clips and incidents",
-                    PinScope.ACTIVITY_HISTORY_SEARCH to "Activity history and search",
-                    PinScope.PRIVATE_CAMERAS to "Private cameras",
-                    PinScope.HOME_ASSISTANT_ACTIONS to "Home Assistant actions",
-                ).forEach { (scope, label) ->
-                    add(
-                        toggle(
+                        })
+                    } else add(unlockPrivacySelections(privacy))
+                    add(action("privacy:remove-pin", "Remove PIN", "Remove all Opah PIN locks from this TV", enabled = !privacy.busy) {
+                        showPinDialog("Confirm PIN to remove it") { pin -> viewModel.removeLocalPin(pin) }
+                    })
+                }
+                SettingsPage.PRIVACY_AREAS -> {
+                    if (!privacy.pinSelectionsUnlocked) add(unlockPrivacySelections(privacy))
+                    listOf(
+                        PinScope.SETTINGS to "Settings",
+                        PinScope.ADMINISTRATIVE_ACTIONS to "Administrative changes",
+                        PinScope.DESTRUCTIVE_ACTIONS to "Delete and destructive actions",
+                        PinScope.CLIPS_AND_INCIDENTS to "Clips and incidents",
+                        PinScope.ACTIVITY_HISTORY_SEARCH to "Activity, history, and search",
+                        PinScope.PRIVATE_CAMERAS to "Private cameras",
+                        PinScope.HOME_ASSISTANT_ACTIONS to "Require PIN for Home Assistant buttons",
+                    ).forEach { (scope, label) ->
+                        add(toggle(
                             "privacy:scope:${scope.name}",
                             label,
                             scope in privacy.protectedScopes,
+                            description = when (scope) {
+                                PinScope.SETTINGS -> "Also protects saved connections"
+                                PinScope.HOME_ASSISTANT_ACTIONS -> "When off, Home Assistant can still require a PIN for individual buttons"
+                                else -> ""
+                            },
                             enabled = privacy.pinSelectionsUnlocked && !privacy.busy,
-                        ) { viewModel.setPinScope(scope, scope !in privacy.protectedScopes) },
-                    )
+                        ) { viewModel.setPinScope(scope, scope !in privacy.protectedScopes) })
+                    }
                 }
-                add(section("privacy:cameras", "Private cameras", "Private cameras are hidden whenever the camera lock is active"))
-                state.snapshot?.cameras.orEmpty().forEach { camera ->
-                    add(
-                        toggle(
+                SettingsPage.PRIVACY_CAMERAS -> {
+                    if (!privacy.pinSelectionsUnlocked) add(unlockPrivacySelections(privacy))
+                    val cameras = state.snapshot?.cameras.orEmpty()
+                    if (privacy.pinSelectionsUnlocked && cameras.isEmpty()) {
+                        add(info("privacy:cameras:none", "No cameras available"))
+                    }
+                    cameras.forEach { camera ->
+                        add(toggle(
                             "privacy:camera:${camera.name}",
                             camera.displayName,
                             camera.name in privacy.privateCameraIds,
                             enabled = privacy.pinSelectionsUnlocked && !privacy.busy,
-                        ) { viewModel.setCameraPrivate(camera.name, camera.name !in privacy.privateCameraIds) },
-                    )
+                        ) { viewModel.setCameraPrivate(camera.name, camera.name !in privacy.privateCameraIds) })
+                    }
                 }
-                add(section("privacy:remove", "Remove PIN"))
-                add(action("privacy:remove-pin", "Remove PIN", "This removes all local PIN locks", "Remove") {
-                    showPinDialog("Confirm PIN to remove it") { pin -> viewModel.removeLocalPin(pin) }
-                })
+                else -> {
+                    add(action("privacy:manage-pin", "Manage PIN", "Lock protected areas or remove the PIN") {
+                        openSettingsPage(SettingsPage.PRIVACY_PIN)
+                    })
+                    add(action("privacy:protected-areas", "Protected areas", "Choose when Opah asks for a PIN") {
+                        openSettingsPage(SettingsPage.PRIVACY_AREAS)
+                    })
+                    add(action("privacy:private-cameras", "Private cameras", "Choose which cameras to hide when locked") {
+                        openSettingsPage(SettingsPage.PRIVACY_CAMERAS)
+                    })
+                }
             }
         }
-        showSettingsList("privacy", "Privacy", "Protect selected cameras and app areas with a PIN", rows)
-    }
-
-    private fun showStartup(state: Phase0UiState) {
-        val rows = buildList {
-            add(section("startup:main", "When Opah opens"))
-            add(startupChoice("startup:home", "Cameras", StartupTarget(StartupTargetKind.HOME), state))
-            add(startupChoice("startup:last", "Last viewed", StartupTarget(StartupTargetKind.LAST_VIEWED), state))
-            state.snapshot?.cameras.orEmpty().forEach { camera ->
-                add(startupChoice("startup:camera:${camera.name}", camera.displayName, StartupTarget(StartupTargetKind.CAMERA, camera.name), state))
-            }
-            state.settings.savedCameraViews.forEach { view ->
-                add(startupChoice("startup:view:${view.id}", view.name, StartupTarget(StartupTargetKind.SAVED_VIEW, view.id), state))
-            }
-            state.snapshot?.cameraGroups.orEmpty().forEach { group ->
-                add(startupChoice("startup:group:${group.name}", group.displayName, StartupTarget(StartupTargetKind.CAMERA_GROUP, group.name), state))
-            }
-            if (state.snapshot?.birdseye?.playable == true) {
-                add(startupChoice("startup:birdseye", "Birdseye", StartupTarget(StartupTargetKind.BIRDSEYE), state))
-            }
+        val description = when (page) {
+            SettingsPage.PRIVACY_CAMERAS -> "Hidden while the Private cameras lock is active"
+            SettingsPage.PRIVACY_AREAS -> "Choose what requires the Opah PIN"
+            else -> ""
         }
-        showSettingsList("startup", "Startup", "Choose what Opah opens first", rows)
+        showSettingsList("privacy", page.label, description, rows)
     }
 
-    private fun showConnection(state: Phase0UiState) {
-        route = NativeRoute(NativeDestination.CONNECTIONS)
-        showConnections(state)
-    }
+    private fun unlockPrivacySelections(privacy: app.opah.tv.ui.PrivacyUiState) =
+        action("privacy:selection-lock", "Unlock to edit", enabled = !privacy.busy) {
+            showPinDialog("Unlock privacy settings") { pin -> viewModel.unlockPrivacy(pin) }
+        }
 
-    private fun openConnections(page: NativeConnectionPage) {
-        route = NativeRoute(NativeDestination.CONNECTIONS, connectionPage = page)
-        configuredStartupApplied = true
-        render(currentState)
+    private fun startupDestinations(state: Phase0UiState): Map<StartupTarget, String> = buildMap {
+        put(StartupTarget(StartupTargetKind.HOME), "Cameras")
+        put(StartupTarget(StartupTargetKind.LAST_VIEWED), "Last viewed")
+        state.snapshot?.cameras.orEmpty().forEach { camera ->
+            put(StartupTarget(StartupTargetKind.CAMERA, camera.name), camera.displayName)
+        }
+        state.settings.savedCameraViews.forEach { view ->
+            put(StartupTarget(StartupTargetKind.SAVED_VIEW, view.id), view.name)
+        }
+        state.snapshot?.cameraGroups.orEmpty().forEach { group ->
+            put(StartupTarget(StartupTargetKind.CAMERA_GROUP, group.name), group.displayName)
+        }
+        if (state.snapshot?.birdseye?.playable == true) {
+            put(StartupTarget(StartupTargetKind.BIRDSEYE), "Birdseye")
+        }
     }
 
     private fun showConnections(state: Phase0UiState) {
-        setNavigationVisible(true)
-        updateNavigationSelection()
-        updateNavigationAppearance(root.navigationOpen)
-        when (connectionsAccess(state.privacy)) {
-            ConnectionsAccess.UNAVAILABLE -> {
-                showList("connections:unavailable", "Connections", "Your connections stay protected", listOf(
-                    info("connections:waiting", "Connection settings are unavailable", "Wait for privacy settings to load, or reopen Opah"),
-                ))
-                return
-            }
-            ConnectionsAccess.LOCKED -> {
-                showProtectedContentGate("connections", "Connections", "Enter the Opah PIN to manage connections on this TV")
-                return
-            }
-            ConnectionsAccess.ALLOWED -> Unit
-        }
-        val selected = route.connectionPage
-        val ha = homeAssistant.state.value
-        val haStatus = when {
-            ha.phase == HomeAssistantConnectionPhase.SIGN_IN_REQUIRED -> "Sign in again"
-            ha.phase == HomeAssistantConnectionPhase.ERROR -> "Needs attention"
-            ha.phase == HomeAssistantConnectionPhase.DISCONNECTED -> "Not connected"
-            !ha.enabled -> "Notifications off"
-            ha.phase == HomeAssistantConnectionPhase.CONNECTED -> "Connected"
+        val homeAssistantStatus = when (homeAssistant.state.value.phase) {
+            HomeAssistantConnectionPhase.SIGN_IN_REQUIRED -> "Sign in again"
+            HomeAssistantConnectionPhase.ERROR -> "Needs attention"
+            HomeAssistantConnectionPhase.DISCONNECTED -> "Not connected"
+            HomeAssistantConnectionPhase.CONNECTED, HomeAssistantConnectionPhase.READY -> "Connected"
             else -> "Connecting"
         }
-        val categories = NativeConnectionPage.entries.map { page ->
-            action("connections:category:${page.name}", page.label,
-                if (page == NativeConnectionPage.NOTIFICATIONS) notificationPauseLabel(state.notificationPause)
-                else if (page == NativeConnectionPage.SETUP) "Guided setup and checks"
-                else if (page == NativeConnectionPage.HOME_ASSISTANT) haStatus
-                else if (state.activeProfile != null && state.snapshot != null) "Connected" else "Not connected",
-                selected = page == selected) { openConnections(page) }
+        val frigateStatus = when {
+            state.activeProfile != null && state.snapshot != null -> "Connected"
+            state.savedProfile != null -> "Needs attention"
+            else -> "Not connected"
         }
-        if (activeSurfaceKey != "connections:pane") {
-            clearActiveSurface()
-            setContentInsets(fullScreen = false)
-            activeSurfaceKey = "connections:pane"
-        }
-        val detailRows = when (selected) {
-            NativeConnectionPage.FRIGATE -> connectionRows(state)
-            NativeConnectionPage.NOTIFICATIONS -> notificationPauseRows(state.notificationPause, state.notificationPauseBusy, state.notificationPauseError).also {
-                handlers["pause:15"] = { viewModel.changeSharedNotificationPause(15) }
-                handlers["pause:60"] = { viewModel.changeSharedNotificationPause(60) }
-                handlers["pause:resume"] = { viewModel.changeSharedNotificationPause(null) }
+        val rows = buildList {
+            add(action("connection:frigate", "Frigate", frigateStatus,
+                if (state.savedProfile != null || state.activeProfile != null) "Manage" else "Connect") {
+                openSettingsPage(SettingsPage.CONNECTION_FRIGATE)
+            })
+            add(action("connection:home-assistant", "Home Assistant", homeAssistantStatus,
+                if (homeAssistant.hasSession()) "Manage" else "Connect") {
+                openSettingsPage(SettingsPage.CONNECTION_HOME_ASSISTANT)
+            })
+            val progress = app.opah.tv.setup.GuidedSetupStore(activity).read()
+            if (state.savedProfile == null || !homeAssistant.hasSession() ||
+                (progress.services != null && !progress.completed)
+            ) {
+                add(action("connection:setup", if (progress.services != null && !progress.completed) "Resume setup" else "Guided setup") {
+                    openSettingsPage(SettingsPage.CONNECTION_SETUP)
+                })
             }
-            else -> emptyList()
+            if (state.savedProfile != null || state.activeProfile != null || homeAssistant.hasSession()) {
+                add(action("connection:check", "Check setup", "Check your saved connections") {
+                    openSettingsPage(SettingsPage.CONNECTION_CHECK)
+                })
+            }
         }
-        if (selected != NativeConnectionPage.HOME_ASSISTANT) {
+        showSettingsList("connections", "Connections", "Connect this TV to your home", rows)
+    }
+
+    private fun showHomeAssistantSettings(page: SettingsPage) {
+        val managesNotifications = page == SettingsPage.NOTIFICATION_HOME_ASSISTANT
+        val locked = connectionsAccess(currentState.privacy) == ConnectionsAccess.LOCKED
+        if (activeHomeAssistantSetup != null && (activeSurfaceKey == "settings:ha-first-sign-in") != locked) {
             activeHomeAssistantSetup?.close()
             activeHomeAssistantSetup = null
-        } else if (activeHomeAssistantSetup == null) {
-            activeHomeAssistantSetup = NativeHomeAssistantSetup(
-                activity = activity,
-                canManage = { connectionsAccess(currentState.privacy) == ConnectionsAccess.ALLOWED },
-                changePopupDuration = { changed ->
-                    val seconds = app.opah.tv.notifications.android.TvAlertOverlaySettingsStore(activity).load().displayDurationSeconds
-                    showChoiceDialog("TV pop-up duration", "Used for both Frigate and Home Assistant messages",
-                        (listOf(0, 5, 10, 15, 20, 30, 60) + seconds).distinct().sorted().map {
-                            Triple(it.toString(), if (it == 0) "Off" else "$it seconds", if (it == seconds) "Current" else "")
-                        }) { selectedDuration ->
-                        if (connectionsAccess(currentState.privacy) == ConnectionsAccess.ALLOWED) {
-                            viewModel.setTvAlertOverlayDisplayDurationSeconds(selectedDuration.toInt())
-                            changed()
-                        }
-                    }
-                },
-                manageNotificationPause = { openConnections(NativeConnectionPage.NOTIFICATIONS) },
-                confirmDisconnect = { disconnect ->
-                    showChoiceDialog("Disconnect Home Assistant?", "Messages will stop on this TV", listOf(
-                        Triple("keep", "Keep connection", ""), Triple("disconnect", "Disconnect", "Remove the saved Home Assistant sign-in"),
-                    )) { choice ->
-                        if (choice == "disconnect") runProtectedAction(PinScope.DESTRUCTIVE_ACTIONS, "disconnecting Home Assistant", disconnect)
-                    }
-                },
-            ).also { it.createContent() }
         }
-        if (selected != NativeConnectionPage.SETUP) {
-            activeGuidedSetup?.close(); activeGuidedSetup = null
-        } else if (activeGuidedSetup == null) {
-            activeGuidedSetup = NativeGuidedSetup(activity, LiveGuidedSetupActions(activity, viewModel,
+        val container = (activity.application as OpahApplication).container
+        val setup = activeHomeAssistantSetup ?: NativeHomeAssistantSetup(
+            activity = activity,
+            canManage = { connectionsAccess(currentState.privacy) == ConnectionsAccess.ALLOWED },
+            canSignIn = {
+                connectionsAccess(currentState.privacy) != ConnectionsAccess.UNAVAILABLE &&
+                    container.canStartHomeAssistantSetup()
+            },
+            part = if (managesNotifications) HomeAssistantSettingsPart.NOTIFICATIONS else HomeAssistantSettingsPart.CONNECTION,
+            openNotifications = { openSettingsPage(SettingsPage.NOTIFICATION_HOME_ASSISTANT) },
+            openPopupSettings = { openSettingsPage(SettingsPage.NOTIFICATION_POPUPS) },
+            confirmDisconnect = { disconnect ->
+                showChoiceDialog("Disconnect Home Assistant?", "Messages will stop on this TV", listOf(
+                    Triple("keep", "Keep connection", ""), Triple("disconnect", "Disconnect", "Remove the saved Home Assistant sign-in"),
+                )) { choice ->
+                    if (choice == "disconnect") runProtectedAction(PinScope.DESTRUCTIVE_ACTIONS, "disconnecting Home Assistant", disconnect)
+                }
+            },
+        ).also { it.createContent() }
+        // First sign-in can open with Settings locked. Use a separate surface without
+        // the Settings category list or any editable settings from the saved connection.
+        if (locked) {
+            showLockedHomeAssistantSetup(setup)
+        } else {
+            showSettingsPane(page.label, page.description, emptyList(), currentState, detailContent = setup.view)
+        }
+        activeHomeAssistantSetup = setup
+        activeHomeAssistantPage = page
+    }
+
+    private fun showLockedHomeAssistantSetup(setup: NativeHomeAssistantSetup) {
+        if (activeSurfaceKey == "settings:ha-first-sign-in") return
+        clearActiveSurface()
+        setContentInsets(fullScreen = false)
+        activeSurfaceKey = "settings:ha-first-sign-in"
+        contentHost.removeAllViews()
+        contentHost.addView(setup.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        setup.view.post { if (!root.navigationOpen && setup.view.isShown) setup.view.requestFocus(View.FOCUS_DOWN) }
+    }
+
+    private fun showGuidedSetup(page: SettingsPage) {
+        val checkOnly = page == SettingsPage.CONNECTION_CHECK
+        val setup = activeGuidedSetup ?: NativeGuidedSetup(
+            activity,
+            LiveGuidedSetupActions(activity, viewModel,
                 pin = {
                     showPinDialog("Create a PIN for settings") { first ->
                         showPinDialog("Enter the PIN again", onCancelled = { first.fill('\u0000') }) { second ->
                             viewModel.setupLocalPin(first, second, setOf(PinScope.SETTINGS))
                         }
                     }
-                }, privacy = {
-                    route = NativeRoute(NativeDestination.SETTINGS, SettingsPage.PRIVACY)
-                    render(currentState)
-                }, finished = { progress, completed ->
+                },
+                privacy = { openSettingsPage(SettingsPage.PRIVACY) },
+                finished = { progress, completed ->
                     configuredStartupApplied = true
-                    route = if (completed && progress.services?.frigate == true && currentState.activeProfile != null && currentState.snapshot != null)
-                        NativeRoute(NativeDestination.HOME)
-                    else NativeRoute(NativeDestination.CONNECTIONS, connectionPage =
-                        if (progress.services?.homeAssistant == true) NativeConnectionPage.HOME_ASSISTANT else NativeConnectionPage.FRIGATE)
-                    render(currentState)
-                }))
-        }
-        val paneState = NativeSettingsUiState(
-            title = selected.label,
-            subtitle = when (selected) { NativeConnectionPage.FRIGATE -> "Connect your cameras and recordings"
-                NativeConnectionPage.HOME_ASSISTANT -> "Receive messages from your home automations"
-                NativeConnectionPage.SETUP -> "Choose services and check what is ready"
-                NativeConnectionPage.NOTIFICATIONS -> "Pause Frigate and Home Assistant together" },
-            categories = categories,
-            detailRows = detailRows,
-            selectedCategoryKey = "connections:category:${selected.name}",
-            preferredDetailFocusKey = focusMemory[route.focusMemoryKey],
-            detailContent = if (selected == NativeConnectionPage.SETUP) activeGuidedSetup?.view else activeHomeAssistantSetup?.view,
+                    if (!checkOnly && completed && progress.services?.frigate == true &&
+                        currentState.activeProfile != null && currentState.snapshot != null
+                    ) navigate(NativeDestination.HOME)
+                    else openSettingsPage(SettingsPage.CONNECTION)
+                }),
+            checkOnly = checkOnly,
+            resumeOnOpen = !checkOnly,
+            repairConnection = { service ->
+                openSettingsPage(if (service == app.opah.tv.setup.SetupServices.FRIGATE) SettingsPage.CONNECTION_FRIGATE
+                    else SettingsPage.CONNECTION_HOME_ASSISTANT)
+            },
         )
-        if (activeConnections != null) {
-            activeConnections?.update(paneState)
-            return
-        }
-        val surface = NativeSettingsSurface(activity, paneState,
-            onActivate = { handlers[it]?.invoke() }, onAdjust = { _, _ -> },
-            onFocused = { key, view -> focusMemory[route.focusMemoryKey] = key; root.rememberContentFocus(view) },
-            initialPosition = connectionsPosition, sectionTitle = "Connections")
-        activeConnections = surface
-        contentHost.removeAllViews()
-        contentHost.addView(surface, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        showSettingsPane(page.label, page.description, emptyList(), currentState, detailContent = setup.view)
+        activeGuidedSetup = setup
+        activeGuidedSetupPage = page
     }
 
     private fun connectionRows(state: Phase0UiState): List<NativeRowModel> {
@@ -3595,33 +3522,32 @@ internal class NativeOpahController(
                     "connection:user",
                     "Access",
                     when {
-                        profile.usesUnauthenticatedFrigatePort -> "No account • full Frigate access"
+                        profile.withoutSignIn -> "Without Frigate sign-in"
                         else -> profile.username
                     },
-                ),
-            )
-            add(
-                info(
-                    "connection:rtsp",
-                    "Live video route",
-                    "${profile.rtspHostOverride ?: "Use server host"}:${profile.rtspPort}",
                 ),
             )
             if (state.savedSessionRecoveryAvailable) {
                 add(info("connection:unavailable", "Frigate is unavailable", state.errorMessage ?: "Try the saved connection again"))
                 add(action("connection:retry", "Try again", value = "Reconnect") { viewModel.retrySavedSession() })
             }
-            add(action("connection:edit", "Change connection", "Enter a different server or account", "Open") {
+            add(action("connection:edit", "Change connection", "Change the server or sign-in options", "Open") {
                 showConnectionDialog(
                     profile.apiBaseUrl,
                     profile.username,
                     profile.rtspHostOverride.orEmpty(),
                     profile.rtspPort.toString(),
+                    profile.withoutSignIn,
                 )
             })
-            add(action("connection:rtsp:edit", "Change live video route", "Does not sign out or change the Frigate account", "Open") {
-                showRtspRouteDialog(profile.rtspHostOverride.orEmpty(), profile.rtspPort.toString())
+            add(action("connection:rtsp:advanced", "Advanced", "Change the live video route") {
+                openSettingsPage(SettingsPage.CONNECTION_FRIGATE_ADVANCED)
             })
+            if (state.activeProfile != null) {
+                add(action("connection:server-info", "Server info", "See performance and recording space") {
+                    openSettingsPage(SettingsPage.SYSTEM)
+                })
+            }
             if (state.activeProfile != null) add(action("connection:signout", "Sign out", "Keep the server address on this TV", "Sign out") {
                 viewModel.logout(forgetServer = false)
             })
@@ -3633,9 +3559,20 @@ internal class NativeOpahController(
         }
     }
 
+    private fun showFrigateLiveRoute(state: Phase0UiState) {
+        val profile = state.activeProfile ?: state.savedProfile
+        val rows = if (profile == null) emptyList() else listOf(
+            info("connection:rtsp", "Current route", "${profile.rtspHostOverride ?: "Server address"}:${profile.rtspPort}"),
+            action("connection:rtsp:edit", "Change live video route", "Keep the current Frigate sign-in") {
+                showRtspRouteDialog(profile.rtspHostOverride.orEmpty(), profile.rtspPort.toString())
+            },
+        )
+        showSettingsList("connection:advanced", "Live video route", "Change where this TV gets live video", rows)
+    }
+
     private fun showServer(state: Phase0UiState) {
         if (serverPage == NativeServerPage.CONNECTION) {
-            openConnections(NativeConnectionPage.FRIGATE)
+            openSettingsPage(SettingsPage.CONNECTION_FRIGATE)
             return
         }
         if (!state.information.loadedOnce && !state.information.loading) {
@@ -3645,7 +3582,7 @@ internal class NativeOpahController(
         val tabs = NativeServerPage.entries.filter { it != NativeServerPage.CONNECTION }.map { page ->
             val key = "server:tab:${page.name}"
             handlers[key] = {
-                if (page == NativeServerPage.CONNECTION) openConnections(NativeConnectionPage.FRIGATE)
+                if (page == NativeServerPage.CONNECTION) openSettingsPage(SettingsPage.CONNECTION_FRIGATE)
                 else {
                     serverPage = page
                     render(currentState)
@@ -3793,55 +3730,7 @@ internal class NativeOpahController(
         showSettingsList("server", "Server", "Connection, performance, and recording space", rows, tabs)
     }
 
-    private fun showAdvanced(state: Phase0UiState) {
-        val device = state.device
-        val rows = buildList {
-            add(
-                info(
-                    "advanced:device",
-                    "This TV",
-                    device?.let { "${it.manufacturer} ${it.model} • Android ${it.androidRelease} • API ${it.apiLevel}" }
-                        ?: "Device details are still loading",
-                ),
-            )
-            add(section("advanced:decoders", "Video decoders", "Technical device capabilities used for playback"))
-            device?.codecs.orEmpty().forEachIndexed { index, codec ->
-                add(
-                    info(
-                        "advanced:codec:$index",
-                        codec.label,
-                        "${codec.mimeType} • ${codec.decoders.size} ${if (codec.decoders.size == 1) "decoder" else "decoders"}${if (codec.hasHardwareDecoder) " • hardware available" else ""}",
-                        codec.decoders.joinToString("\n") { decoder ->
-                            buildList {
-                                add(decoder.name)
-                                when {
-                                    decoder.hardwareAccelerated == true -> add("hardware")
-                                    decoder.softwareOnly == true -> add("software")
-                                }
-                                if (decoder.vendor == true) add("vendor")
-                                if (decoder.adaptivePlayback) add("adaptive playback")
-                                decoder.maxSupportedInstances?.let { add("up to $it instances") }
-                            }.joinToString(" • ")
-                        }.ifBlank { "No decoder names advertised" },
-                    ),
-                )
-            }
-            state.snapshot?.warnings.orEmpty().forEachIndexed { index, warning ->
-                add(info("advanced:warning:$index", "Server warning", warning))
-            }
-            add(
-                action(
-                    "advanced:refresh",
-                    if (state.loading) "Refreshing device data" else "Refresh device data",
-                    enabled = !state.loading,
-                    value = "Refresh",
-                ) { viewModel.refresh() },
-            )
-        }
-        showSettingsList("advanced", "Device Info", "TV and decoder details for troubleshooting", rows)
-    }
-
-    private fun showAbout(state: Phase0UiState) {
+    private fun showAboutProject(state: Phase0UiState) {
         val aboutText = aboutOpahText(displayedVersionName(), state.snapshot?.frigateVersion)
         val versionLabel = "Version ${displayedVersionName()}"
         val surface = activeAbout ?: NativeAboutSurface(
@@ -3856,7 +3745,7 @@ internal class NativeOpahController(
             onNavigateOutLeft = { activeSettings?.focusSelectedCategory("settings:category:ABOUT") },
         )
         surface.update(aboutText, versionLabel)
-        showSettingsPane("About Opah", "Project information", emptyList(), state, detailContent = surface)
+        showSettingsPane("Project information", "", emptyList(), state, detailContent = surface)
         activeAbout = surface
     }
 
@@ -3872,19 +3761,25 @@ internal class NativeOpahController(
     }
 
     private fun showRecovery(state: Phase0UiState) {
-        route = NativeRoute(NativeDestination.CONNECTIONS)
+        route = NativeRoute(NativeDestination.SETTINGS, SettingsPage.CONNECTION_FRIGATE)
         configuredStartupApplied = true
-        showConnections(state)
+        setNavigationVisible(true)
+        updateNavigationSelection()
+        updateNavigationAppearance(root.navigationOpen)
+        showSettings(state)
     }
 
     private fun showConnectionSetup(state: Phase0UiState) {
-        route = NativeRoute(NativeDestination.CONNECTIONS, connectionPage = when {
-            homeAssistant.hasSession() -> NativeConnectionPage.HOME_ASSISTANT
-            state.savedProfile != null -> NativeConnectionPage.FRIGATE
-            else -> NativeConnectionPage.SETUP
+        route = NativeRoute(NativeDestination.SETTINGS, when {
+            homeAssistant.hasSession() -> SettingsPage.CONNECTION
+            state.savedProfile != null -> SettingsPage.CONNECTION_FRIGATE
+            else -> SettingsPage.CONNECTION_SETUP
         })
         configuredStartupApplied = true
-        showConnections(state)
+        setNavigationVisible(true)
+        updateNavigationSelection()
+        updateNavigationAppearance(root.navigationOpen)
+        showSettings(state)
     }
 
     private fun showWelcome(
@@ -3988,17 +3883,22 @@ internal class NativeOpahController(
         val request = requireNotNull(state.playback)
         val surfaceKey = app.opah.tv.playback.playbackSurfaceKey(request)
         val controls = playbackControls(state, request)
-        val actionMessage = state.review.actionErrorFor(request.activityItemId)?.message
-            ?: state.review.playbackNavigationMessage
-            ?: state.liveActions.errorMessage
-            ?: state.liveActions.message
-            ?: state.review.savedClipMessage.takeIf { state.review.savedClipItemId == request.activityItemId }
-            ?: state.history.savedMessage.takeIf { request.recordingSaveKey != null }
+        // Birdseye does not own camera actions or review queues. Their background
+        // feedback must not wake the controls while the composite is playing.
+        val showActionFeedback = request.stretchPreferenceKey != BIRDSEYE_STRETCH_PREFERENCE_KEY
+        val actionMessage = if (showActionFeedback) {
+            state.review.actionErrorFor(request.activityItemId)?.message
+                ?: state.review.playbackNavigationMessage
+                ?: state.liveActions.errorMessage
+                ?: state.liveActions.message
+                ?: state.review.savedClipMessage.takeIf { state.review.savedClipItemId == request.activityItemId }
+                ?: state.history.savedMessage.takeIf { request.recordingSaveKey != null }
+        } else null
         // Keep an unresolved write error readable instead of auto-hiding its recovery action.
-        val feedbackPending = state.review.actionErrorFor(request.activityItemId) != null ||
+        val feedbackPending = showActionFeedback && (state.review.actionErrorFor(request.activityItemId) != null ||
             state.liveActions.recordingBusy || state.review.advancingPlayback ||
             (request.activityItemId != null && state.review.savingClipItemId == request.activityItemId) ||
-            (request.recordingStartTime != null && state.history.savingSlotStartTime == request.recordingStartTime)
+            (request.recordingStartTime != null && state.history.savingSlotStartTime == request.recordingStartTime))
         if (activeSurfaceKey == surfaceKey && activePlayback != null) {
             activePlayback?.updateLiveRecoveryActions(liveRecoveryActions(state, request))
             activePlayback?.updateControls(controls, actionMessage, feedbackPending)
@@ -4040,7 +3940,6 @@ internal class NativeOpahController(
             request = displayRequest,
             preferRtpTcp = state.settings.preferRtpTcp,
             startMuted = state.settings.startLiveMuted,
-            diagnosticsEnabled = state.settings.diagnosticsEnabled,
             initialControls = controls,
             initialActionMessage = actionMessage,
             initialFeedbackPending = feedbackPending,
@@ -4390,18 +4289,17 @@ internal class NativeOpahController(
             activeAppearance = null
         }
         if (activeAbout !== detailContent) activeAbout = null
-        val selectedPage = when (route.settingsPage) {
-            SettingsPage.PLAYBACK_TEST,
-            SettingsPage.CAMERA_DIAGNOSTICS,
-            -> SettingsPage.PLAYBACK
-            SettingsPage.CONNECTION -> SettingsPage.SYSTEM
-            SettingsPage.MAIN -> null
-            else -> route.settingsPage
-        }
-        val categories = SETTINGS_PAGE_ORDER.map { page ->
+        val selectedPage = route.settingsPage.takeUnless { it == SettingsPage.MAIN }?.nativeCategory
+        val categories = NATIVE_SETTINGS_PAGE_ORDER.map { page ->
             action(
                 key = "settings:category:${page.name}",
-                title = page.label,
+                title = when (page) {
+                    SettingsPage.CONNECTION -> "Connections"
+                    SettingsPage.TV_ALERTS -> "Notifications"
+                    SettingsPage.PLAYBACK -> "Cameras & playback"
+                    SettingsPage.ABOUT -> "About & updates"
+                    else -> page.label
+                },
                 description = settingsPageValue(page, state),
                 value = "",
                 selected = page == selectedPage,
@@ -4416,6 +4314,7 @@ internal class NativeOpahController(
             detailTabs = detailTabs,
             preferredDetailFocusKey = focusMemory[route.focusMemoryKey],
             detailContent = detailContent,
+            detailLocationKey = route.settingsPage.name,
         )
         if (activeSurfaceKey == "settings:pane" && activeSettings != null) {
             activeSettings?.update(paneState)
@@ -4463,12 +4362,14 @@ internal class NativeOpahController(
     }
 
     private fun clearActiveSurface() {
+        dismissNotificationPreview()
         activeGuidedSetup?.close()
         activeGuidedSetup = null
         captureSurfacePosition()
         activeHomeAssistantSetup?.close()
         activeHomeAssistantSetup = null
-        activeConnections = null
+        activeHomeAssistantPage = null
+        activeGuidedSetupPage = null
         activeHome?.close()
         activeHome = null
         activeSettings = null
@@ -4494,7 +4395,6 @@ internal class NativeOpahController(
     private fun captureSurfacePosition() {
         activeHome?.let { homeBookmark = it.captureBookmark() }
         activeSettings?.let { settingsPosition = it.capturePosition() }
-        activeConnections?.let { connectionsPosition = it.capturePosition() }
         activeAppearance?.let { appearancePosition = it.capturePosition() }
         activeMotionSearch?.let { motionBookmark = it.captureBookmark() }
         activeSurfaceKey?.let { key ->
@@ -4601,10 +4501,7 @@ internal class NativeOpahController(
     }
 
     private fun openSettingsPage(page: SettingsPage) {
-        if (page == SettingsPage.CONNECTION) {
-            openConnections(NativeConnectionPage.FRIGATE)
-            return
-        }
+        if (page == SettingsPage.SYSTEM && serverPage == NativeServerPage.CONNECTION) serverPage = NativeServerPage.PERFORMANCE
         route = NativeRoute(NativeDestination.SETTINGS, page)
         render(currentState)
     }
@@ -4654,7 +4551,7 @@ internal class NativeOpahController(
             else -> ""
         }
         navViews.forEach { (destination, view) ->
-            view.isEnabled = camerasReady || destination in setOf(NativeDestination.CONNECTIONS, NativeDestination.SETTINGS)
+            view.isEnabled = camerasReady || destination == NativeDestination.SETTINGS
             view.alpha = if (view.isEnabled) 1f else 0.45f
             view.text = if (open) destination.label else ""
             view.gravity = if (open) Gravity.CENTER_VERTICAL or Gravity.START else Gravity.CENTER
@@ -4755,20 +4652,12 @@ internal class NativeOpahController(
             ?: cameraName.replace('_', ' ').replaceFirstChar(Char::uppercase)
 
     private fun settingsPageValue(page: SettingsPage, state: Phase0UiState): String = when (page) {
-        SettingsPage.UPDATE -> if (state.appUpdate.updateAvailable) "Update ready" else displayedVersionName()
         SettingsPage.APPEARANCE -> state.settings.appearanceMode.name.humanize()
         SettingsPage.PLAYBACK -> state.settings.streamPreference.name.humanize()
-        SettingsPage.TV_ALERTS -> if (state.tvAlerts.enabled) "On" else "Off"
+        SettingsPage.TV_ALERTS -> if (state.notificationPause.paused && state.notificationPause.available) notificationPauseLabel(state.notificationPause) else ""
         SettingsPage.PRIVACY -> if (state.privacy.pinConfigured) "PIN set" else "No PIN"
-        SettingsPage.STARTUP -> startupTargetLabel(state.settings.startupTarget, state.settings)
-        SettingsPage.CONNECTION -> state.activeProfile?.username.orEmpty()
-        SettingsPage.SYSTEM -> state.snapshot?.frigateVersion.orEmpty()
-        SettingsPage.ADVANCED -> state.device?.model.orEmpty()
-        SettingsPage.ABOUT -> displayedVersionName()
-        SettingsPage.MAIN,
-        SettingsPage.PLAYBACK_TEST,
-        SettingsPage.CAMERA_DIAGNOSTICS,
-        -> ""
+        SettingsPage.ABOUT -> if (state.appUpdate.updateAvailable) "Update ready" else displayedVersionName()
+        else -> ""
     }
 
     private fun displayedVersionName(): String =
@@ -4784,16 +4673,9 @@ internal class NativeOpahController(
         viewModel.loadCameraPlaybackCompatibilityChoices()
     }
 
-    private fun startupChoice(key: String, title: String, target: StartupTarget, state: Phase0UiState): NativeRowModel {
-        val selected = state.settings.startupTarget == target
-        return choice(key, title, selected = selected) {
-            viewModel.updateStartupTarget(target)
-        }
-    }
-
     private fun showCreatePinFlow() {
         showPinDialog("Create a PIN") { first ->
-            showPinDialog("Enter the PIN again") { confirmation ->
+            showPinDialog("Enter the PIN again", onCancelled = { first.fill('\u0000') }) { confirmation ->
                 viewModel.setupLocalPin(first, confirmation, emptySet())
             }
         }
@@ -5283,6 +5165,7 @@ internal class NativeOpahController(
         initialUsername: String,
         initialRtspHost: String,
         initialRtspPort: String,
+        initialWithoutSignIn: Boolean = false,
     ) {
         var submission: ConnectionFormSubmission? = null
         var clearPassword: (() -> Unit)? = null
@@ -5290,18 +5173,17 @@ internal class NativeOpahController(
             submission?.close()
             clearPassword?.invoke()
         }
-        val initialAccountUsername = initialUsername.takeUnless {
-            ConnectionProfileFactory.targetsUnauthenticatedFrigatePort(initialUrl)
-        }.orEmpty()
+        var useNoSignIn = initialWithoutSignIn
+        val initialAccountUsername = initialUsername.takeUnless { initialWithoutSignIn }.orEmpty()
         val fields = listOf(
             dialogTextField(
                 "https://frigate.example:8971",
                 initialUrl,
                 InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI,
             ),
-            dialogTextField("Optional", initialAccountUsername),
+            dialogTextField("Your Frigate account", initialAccountUsername),
             dialogTextField(
-                "Optional",
+                "Your Frigate password",
                 "",
                 InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD,
             ),
@@ -5332,34 +5214,49 @@ internal class NativeOpahController(
             }
             prepareDialogKeyboard(dialog, field)
         }
-        val unauthenticatedPortNotice = TextView(activity).apply {
-            setText(R.string.native_unauthenticated_port_warning)
+        val noSignInNotice = TextView(activity).apply {
+            setText(R.string.frigate_without_sign_in_warning)
             textSize = 12.5f
             setTextColor(NativeTheme.palette.secondaryText)
             setPadding(activity.dp(2), activity.dp(3), 0, activity.dp(5))
             visibility = View.GONE
         }
+        fun isInternalPort() = ConnectionProfileFactory.targetsDefaultInternalPort(fields[0].text.toString())
+        fun withoutSignIn() = isInternalPort() || useNoSignIn
+        val credentials = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(labeledDialogField("Username", fields[1]))
+            addView(labeledDialogField("Password", fields[2]))
+        }
+        lateinit var accessChoice: TextView
         fun updateCredentialFields() {
-            val unauthenticated = ConnectionProfileFactory.targetsUnauthenticatedFrigatePort(
-                fields[0].text.toString(),
-            )
-            fields[0].imeOptions = if (unauthenticated) {
+            val noSignIn = withoutSignIn()
+            fields[0].imeOptions = if (noSignIn) {
                 android.view.inputmethod.EditorInfo.IME_ACTION_DONE
             } else {
                 android.view.inputmethod.EditorInfo.IME_ACTION_NEXT
             }
-            fields[1].isEnabled = !unauthenticated
-            fields[1].isFocusable = !unauthenticated
-            fields[1].alpha = if (unauthenticated) 0.5f else 1f
-            fields[2].isEnabled = !unauthenticated
-            fields[2].isFocusable = !unauthenticated
-            fields[2].alpha = if (unauthenticated) 0.5f else 1f
-            unauthenticatedPortNotice.visibility = if (unauthenticated) View.VISIBLE else View.GONE
+            if (noSignIn) fields[2].text?.clear()
+            credentials.visibility = if (noSignIn) View.GONE else View.VISIBLE
+            noSignInNotice.visibility = if (noSignIn) View.VISIBLE else View.GONE
+            accessChoice.visibility = if (isInternalPort()) View.GONE else View.VISIBLE
+            accessChoice.setText(if (useNoSignIn) R.string.frigate_connect_without_sign_in_on
+                else R.string.frigate_connect_without_sign_in_off)
+        }
+        accessChoice = dialogButton(activity.getString(R.string.frigate_connect_without_sign_in_off)) {
+            useNoSignIn = !useNoSignIn
+            updateCredentialFields()
+        }.apply {
+            tag = "connection:without-sign-in"
+            gravity = Gravity.CENTER_VERTICAL or Gravity.START
         }
         fields[0].addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = Unit
-            override fun afterTextChanged(text: Editable?) = updateCredentialFields()
+            override fun afterTextChanged(text: Editable?) {
+                useNoSignIn = false
+                updateCredentialFields()
+            }
         })
         var differentLiveVideoAddress = initialRtspHost.isNotBlank() ||
             initialRtspPort.trim().let { it.isNotEmpty() && it != "8554" }
@@ -5419,9 +5316,9 @@ internal class NativeOpahController(
                     "Use the address you would open to view Frigate in a browser",
                 ),
             )
-            addView(unauthenticatedPortNotice)
-            addView(labeledDialogField("Username • not used on port 5000", fields[1]))
-            addView(labeledDialogField("Password • not used on port 5000", fields[2]))
+            addView(accessChoice)
+            addView(noSignInNotice)
+            addView(credentials)
             addView(liveVideoChoice)
             addView(liveVideoFields)
         }
@@ -5447,9 +5344,9 @@ internal class NativeOpahController(
             submission?.submit(testOnly) { result ->
                 val arguments = fields.map { it.text.toString() }
                 if (testOnly) {
-                    viewModel.testConnection(arguments[0], arguments[1], arguments[2], arguments[3], arguments[4], result)
+                    viewModel.testConnection(arguments[0], arguments[1], arguments[2], arguments[3], arguments[4], withoutSignIn(), result)
                 } else {
-                    viewModel.connect(arguments[0], arguments[1], arguments[2], arguments[3], arguments[4], result)
+                    viewModel.connect(arguments[0], arguments[1], arguments[2], arguments[3], arguments[4], withoutSignIn(), result)
                 }
             }
         }
@@ -5460,7 +5357,7 @@ internal class NativeOpahController(
             onStatus = { busy, message ->
                 if (busy) lastAction = dialog.currentFocus
                 fields.forEach { field -> field.isEnabled = !busy }
-                listOf(liveVideoChoice, test, connect).forEach { control ->
+                listOf(accessChoice, liveVideoChoice, test, connect).forEach { control ->
                     control.isEnabled = !busy
                     control.isFocusable = !busy
                     control.alpha = if (busy) 0.5f else 1f
@@ -5877,12 +5774,12 @@ internal class NativeOpahController(
         val destination = when (destinationName) {
             "REVIEW", "ACTIVITY" -> NativeDestination.ACTIVITY
             "SAVED", "CLIPS" -> NativeDestination.CLIPS
-            "CONNECTIONS" -> NativeDestination.CONNECTIONS
-            "SETTINGS", "INFORMATION", "ABOUT" -> NativeDestination.SETTINGS
+            "SETTINGS", "CONNECTIONS", "INFORMATION", "ABOUT" -> NativeDestination.SETTINGS
             else -> NativeDestination.HOME
         }
         val settingsPage = if (destination == NativeDestination.SETTINGS) {
             when (destinationName) {
+                "CONNECTIONS" -> SettingsPage.CONNECTION
                 "INFORMATION" -> SettingsPage.SYSTEM
                 "ABOUT" -> SettingsPage.ABOUT
                 else -> settingsPageName?.let { name ->

@@ -67,7 +67,7 @@ internal fun isPrivateLiveAddress(address: InetAddress): Boolean {
 }
 
 /** Syntactic candidacy only. Hostnames still need bounded, checked resolution before any GET. */
-internal fun isLocalLiveCandidate(url: HttpUrl): Boolean = url.scheme == "http" && url.port == 5000 &&
+internal fun isLocalLiveCandidate(url: HttpUrl): Boolean = url.scheme == "http" &&
     (liveAddressLiteral(url.host)?.let(::isPrivateLiveAddress) ?: true)
 
 /**
@@ -93,7 +93,8 @@ internal class LocalHttpLiveTransport private constructor(
     fun allowsLiveUri(url: HttpUrl): Boolean = isCurrent() && url == live
 
     private fun checkRequest(request: Request) {
-        val hostHeader = if (':' in base.host) "[${base.host}]:5000" else "${base.host}:5000"
+        val host = if (':' in base.host) "[${base.host}]" else base.host
+        val hostHeader = if (base.port == 80) host else "$host:${base.port}"
         if (!isCurrent() || !network.validate() || request.method != "GET" || request.body != null ||
             (request.url != live && request.url !in apiUrls) ||
             request.headers.names().any { it.lowercase() !in allowedHeaders } ||
@@ -126,14 +127,14 @@ internal class LocalHttpLiveTransport private constructor(
                 override fun connect(endpoint: SocketAddress) = connect(endpoint, 2_000)
                 override fun connect(endpoint: SocketAddress, timeout: Int) {
                     val destination = endpoint as? InetSocketAddress ?: throw LocalLiveUnavailableException()
-                    if (!isCurrent() || destination.isUnresolved || destination.port != 5000 ||
+                    if (!isCurrent() || destination.isUnresolved || destination.port != base.port ||
                         destination.address !in approved || !isPrivateLiveAddress(destination.address)
                     ) throw LocalLiveUnavailableException()
                     try {
                         network.bind(this)
                         if (!isCurrent()) throw LocalLiveUnavailableException()
                         super.connect(destination, timeout)
-                        if (!isCurrent() || inetAddress !in approved || port != 5000) throw LocalLiveUnavailableException()
+                        if (!isCurrent() || inetAddress !in approved || port != base.port) throw LocalLiveUnavailableException()
                     } catch (_: Exception) {
                         runCatching { close() }
                         throw LocalLiveUnavailableException()

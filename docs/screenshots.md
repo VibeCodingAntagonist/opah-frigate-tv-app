@@ -1,4 +1,4 @@
-# Opah 0.7.3 interface gallery
+# Opah 0.7.4 interface gallery
 
 Every image below is a 1920×1080 Android TV screenshot made with fictional
 example data and generated camera scenes. No real camera, account, server, or
@@ -9,9 +9,9 @@ The interface uses compact controls and clear remote-focus outlines.
 
 ## Start and connection states
 
-| Connecting | Saved Frigate connection |
+| Connecting | Frigate setup on a custom port |
 | --- | --- |
-| <img src="screenshots/01-connecting.png" alt="Opah connecting screen" width="720"> | <img src="screenshots/02-connection-setup.png" alt="Opah Frigate connection settings with a fictional saved server" width="720"> |
+| <img src="screenshots/01-connecting.png" alt="Opah connecting screen" width="720"> | <img src="screenshots/02-connection-setup.png" alt="Frigate setup with a fictional proxy address and Connect without signing in turned on" width="720"> |
 
 | Recoverable connection failure |
 | --- |
@@ -21,13 +21,13 @@ The interface uses compact controls and clear remote-focus outlines.
 
 | Cameras | Expanded navigation |
 | --- | --- |
-| <img src="screenshots/04-home.png" alt="Opah Cameras grid with four fictional camera previews" width="720"> | <img src="screenshots/05-navigation-expanded.png" alt="Opah navigation with Cameras, Activity, Clips, Connections, and Settings" width="720"> |
+| <img src="screenshots/04-home.png" alt="Opah Cameras grid with fictional camera previews" width="720"> | <img src="screenshots/05-navigation-expanded.png" alt="Opah navigation with Cameras, Activity, Clips, and Settings" width="720"> |
 
 ## Connections and guided setup
 
 | Connections | Home Assistant sign-in |
 | --- | --- |
-| <img src="screenshots/27-connections.png" alt="Opah Connections page for Frigate, Home Assistant, setup, and notifications" width="720"> | <img src="screenshots/31-home-assistant-setup.png" alt="Home Assistant setup with a fictional server and TV name" width="720"> |
+| <img src="screenshots/27-connections.png" alt="Connections in Settings with Frigate, Home Assistant, Guided setup, and Check setup" width="720"> | <img src="screenshots/31-home-assistant-setup.png" alt="Home Assistant setup with a fictional server and TV name" width="720"> |
 
 | Choose your services | Choose privacy |
 | --- | --- |
@@ -35,7 +35,7 @@ The interface uses compact controls and clear remote-focus outlines.
 
 | Check setup | Home Assistant choices |
 | --- | --- |
-| <img src="screenshots/30-connection-checks.png" alt="Connection checks keep sign-in, notification permissions, previews, and delivery results separate" width="720"> | <img src="screenshots/32-home-assistant-options.png" alt="Separate Home Assistant notification, message-detail, picture, and automation-button choices" width="720"> |
+| <img src="screenshots/30-connection-checks.png" alt="Check setup shows the Frigate connection result, Home Assistant status, and Check again and Done actions" width="720"> | <img src="screenshots/32-home-assistant-options.png" alt="Separate Home Assistant notification, message-detail, picture, and automation-button choices" width="720"> |
 
 | Pause both notification sources |
 | --- |
@@ -95,7 +95,8 @@ The interface uses compact controls and clear remote-focus outlines.
 
 Passive Frigate alerts remain the default. These examples show the additional
 controls available after enabling interactive alerts or Home Assistant
-automation buttons. Home Assistant button requests require PIN authorization.
+automation buttons. A Home Assistant button can require a PIN based on your
+Opah settings and the notification.
 
 | Interactive Frigate alert | Home Assistant message |
 | --- | --- |
@@ -109,18 +110,18 @@ automation buttons. Home Assistant button requests require PIN authorization.
 
 | Camera playback choices |
 | --- |
-| <img src="screenshots/38-playback-settings.png" alt="Cameras and Playback settings with automatic connection recovery off by default" width="720"> |
+| <img src="screenshots/38-playback-settings.png" alt="Troubleshoot playback settings with automatic connection recovery off" width="720"> |
 
 | Settings | Up to date |
 | --- | --- |
-| <img src="screenshots/14-settings.png" alt="Opah Settings with categories beside the overview" width="720"> | <img src="screenshots/25-update.png" alt="Opah Update page with installed version, current status, and update checks" width="720"> |
+| <img src="screenshots/14-settings.png" alt="Opah Settings with categories beside the Privacy pane and its Create PIN action" width="720"> | <img src="screenshots/25-update.png" alt="Opah About and updates page with the installed version and update status" width="720"> |
 
-| Custom color example | Device information |
+| Custom color example | Playback diagnostics |
 | --- | --- |
-| <img src="screenshots/15-custom-theme.png" alt="Opah Appearance page using a custom television color" width="720"> | <img src="screenshots/16-diagnostics.png" alt="Opah Device Info page with fictional decoder data" width="720"> |
+| <img src="screenshots/15-custom-theme.png" alt="Opah Customize theme page with an example television color" width="720"> | <img src="screenshots/16-diagnostics.png" alt="Opah Playback diagnostics page with fictional stream and decoder details" width="720"> |
 
 ## About
 
 | Project information and disclosures |
 | --- |
-| <img src="screenshots/18-about.png" alt="Opah About page with version, privacy, project, and support information" width="720"> |
+| <img src="screenshots/18-about.png" alt="Opah Project information with privacy and project disclosures" width="720"> |

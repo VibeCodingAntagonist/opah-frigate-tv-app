@@ -79,9 +79,9 @@ internal class LiveGuidedSetupActions(
             deliveryInstruction = proof.instruction, sharedPause = notificationPauseLabel(container.notificationPause.snapshot()),
             notificationsPaused = container.notificationPause.snapshot().paused)
     }
-    override fun frigateForm(): NativeSetupForm = NativeFrigateSetup(activity, viewModel.state.value.savedProfile, ::allowed) { test, values, result ->
-        if (test) viewModel.testSetupConnection(values[0], values[1], values[2], values[3], values[4], result)
-        else viewModel.connect(values[0], values[1], values[2], values[3], values[4], result)
+    override fun frigateForm(): NativeSetupForm = NativeFrigateSetup(activity, viewModel.state.value.savedProfile, ::allowed) { test, values, withoutSignIn, result ->
+        if (test) viewModel.testSetupConnection(values[0], values[1], values[2], values[3], values[4], withoutSignIn, result)
+        else viewModel.connect(values[0], values[1], values[2], values[3], values[4], withoutSignIn, result)
     }
     override fun homeAssistantForm(): NativeSetupForm {
         val setup = NativeHomeAssistantSetup(activity, canManage = ::allowed, setupOnly = true, closeWhenDetached = false)

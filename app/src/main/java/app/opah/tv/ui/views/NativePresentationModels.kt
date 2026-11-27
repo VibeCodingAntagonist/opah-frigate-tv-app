@@ -10,7 +10,6 @@ internal enum class NativeDestination(
     HOME("Cameras", R.drawable.ic_videocam),
     ACTIVITY("Activity", R.drawable.ic_review),
     CLIPS("Clips", R.drawable.ic_saved),
-    CONNECTIONS("Connections", R.drawable.ic_connections),
     SETTINGS("Settings", R.drawable.ic_settings),
 }
 
@@ -27,18 +26,37 @@ internal enum class NativeConnectionPage(val label: String) {
 internal data class NativeRoute(
     val destination: NativeDestination = NativeDestination.HOME,
     val settingsPage: SettingsPage = SettingsPage.MAIN,
-    val connectionPage: NativeConnectionPage = NativeConnectionPage.FRIGATE,
 ) {
     init {
         require(destination == NativeDestination.SETTINGS || settingsPage == SettingsPage.MAIN)
-        require(destination == NativeDestination.CONNECTIONS || connectionPage == NativeConnectionPage.FRIGATE)
     }
 
     val focusMemoryKey: String = when {
-        destination == NativeDestination.CONNECTIONS -> "CONNECTIONS:${connectionPage.name}"
         destination != NativeDestination.SETTINGS -> destination.name
         else -> "SETTINGS:${settingsPage.name}"
     }
+}
+
+internal val NATIVE_SETTINGS_PAGE_ORDER = listOf(
+    SettingsPage.CONNECTION,
+    SettingsPage.TV_ALERTS,
+    SettingsPage.PLAYBACK,
+    SettingsPage.PRIVACY,
+    SettingsPage.APPEARANCE,
+    SettingsPage.ABOUT,
+)
+
+internal val SettingsPage.nativeCategory: SettingsPage get() = when (this) {
+    SettingsPage.STARTUP, SettingsPage.PLAYBACK_TROUBLESHOOT, SettingsPage.PLAYBACK_TEST,
+    SettingsPage.CAMERA_DIAGNOSTICS, SettingsPage.ADVANCED -> SettingsPage.PLAYBACK
+    SettingsPage.PRIVACY_PIN, SettingsPage.PRIVACY_AREAS, SettingsPage.PRIVACY_CAMERAS -> SettingsPage.PRIVACY
+    SettingsPage.APPEARANCE_CUSTOM -> SettingsPage.APPEARANCE
+    SettingsPage.UPDATE, SettingsPage.ABOUT_PROJECT -> SettingsPage.ABOUT
+    SettingsPage.CONNECTION_FRIGATE, SettingsPage.CONNECTION_FRIGATE_ADVANCED, SettingsPage.CONNECTION_HOME_ASSISTANT,
+    SettingsPage.CONNECTION_SETUP, SettingsPage.CONNECTION_CHECK, SettingsPage.SYSTEM -> SettingsPage.CONNECTION
+    SettingsPage.NOTIFICATION_FRIGATE, SettingsPage.NOTIFICATION_FRIGATE_RULES,
+    SettingsPage.NOTIFICATION_HOME_ASSISTANT, SettingsPage.NOTIFICATION_POPUPS -> SettingsPage.TV_ALERTS
+    else -> this
 }
 
 internal enum class NativeRowKind {

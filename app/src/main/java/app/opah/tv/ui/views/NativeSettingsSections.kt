@@ -1,7 +1,7 @@
 package app.opah.tv.ui.views
 
 internal enum class NativeAlertSection(val label: String) {
-    ACTIVITY("Activity"), SCHEDULE("Schedule"), PREVIEW("Preview"), DELIVERY("Delivery"),
+    ACTIVITY("Activity"), SCHEDULE("Schedule"), PREVIEW("Preview"),
 }
 
 /** Existing controls are grouped without changing their actions or availability policies. */
@@ -10,9 +10,7 @@ internal fun alertSectionForKey(key: String): NativeAlertSection? = when {
     key == "alerts:when" || key.startsWith("alerts:schedule:") || key.startsWith("alerts:snooze") ->
         NativeAlertSection.SCHEDULE
     key.startsWith("alerts:privacy") || key in setOf(
-        "alerts:display", "alerts:duration", "alerts:vertical", "alerts:horizontal", "alerts:image", "alerts:interactive",
+        "alerts:display", "alerts:interactive", "alerts:inline-recording", "alerts:test:frigate",
     ) -> NativeAlertSection.PREVIEW
-    key.startsWith("alerts:test:") || key.startsWith("alerts:delivery") ||
-        key in setOf("alerts:android", "alerts:overlay") -> NativeAlertSection.DELIVERY
     else -> NativeAlertSection.ACTIVITY
 }

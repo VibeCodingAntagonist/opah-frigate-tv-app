@@ -980,7 +980,7 @@ fun OpahApp(
                                     initialFocusRequester = settingsDetailFocusRequester,
                                 )
 
-                                SettingsPage.APPEARANCE -> AppearanceSettingsScreen(
+                                SettingsPage.APPEARANCE, SettingsPage.APPEARANCE_CUSTOM -> AppearanceSettingsScreen(
                                     state = state,
                                     onAppearance = viewModel::updateAppearance,
                                     onCustomTheme = viewModel::updateCustomTheme,
@@ -993,7 +993,7 @@ fun OpahApp(
                                     initialFocusRequester = settingsDetailFocusRequester,
                                 )
 
-                                SettingsPage.PLAYBACK -> PlaybackSettingsScreen(
+                                SettingsPage.PLAYBACK, SettingsPage.PLAYBACK_TROUBLESHOOT -> PlaybackSettingsScreen(
                                     state = state,
                                     onStreamPreference = viewModel::updateStreamPreference,
                                     onCompatibilityMode = viewModel::updatePreferRtpTcp,
@@ -1040,7 +1040,8 @@ fun OpahApp(
                                     initialFocusRequester = settingsDetailFocusRequester,
                                 )
 
-                                SettingsPage.TV_ALERTS -> TvAlertsSettingsScreen(
+                                SettingsPage.TV_ALERTS, SettingsPage.NOTIFICATION_FRIGATE, SettingsPage.NOTIFICATION_FRIGATE_RULES,
+                                SettingsPage.NOTIFICATION_HOME_ASSISTANT, SettingsPage.NOTIFICATION_POPUPS -> TvAlertsSettingsScreen(
                                     state = state,
                                     onEnable = onEnableTvAlerts,
                                     onDisable = viewModel::disableTvAlerts,
@@ -1087,7 +1088,8 @@ fun OpahApp(
                                     initialFocusRequester = settingsDetailFocusRequester,
                                 )
 
-                                SettingsPage.PRIVACY -> PrivacySettingsScreen(
+                                SettingsPage.PRIVACY, SettingsPage.PRIVACY_PIN, SettingsPage.PRIVACY_AREAS,
+                                SettingsPage.PRIVACY_CAMERAS -> PrivacySettingsScreen(
                                     state = state,
                                     onSetupPin = viewModel::setupLocalPin,
                                     onUnlockPinChoices = viewModel::unlockPrivacy,
@@ -1112,7 +1114,9 @@ fun OpahApp(
                                     initialFocusRequester = settingsDetailFocusRequester,
                                 )
 
-                                SettingsPage.CONNECTION -> InformationScreen(
+                                SettingsPage.CONNECTION, SettingsPage.CONNECTION_FRIGATE,
+                                SettingsPage.CONNECTION_FRIGATE_ADVANCED, SettingsPage.CONNECTION_HOME_ASSISTANT,
+                                SettingsPage.CONNECTION_SETUP, SettingsPage.CONNECTION_CHECK -> InformationScreen(
                                     state = state,
                                     onLoad = { viewModel.loadInformation() },
                                     onRefresh = { viewModel.loadInformation(force = true) },
@@ -1152,7 +1156,7 @@ fun OpahApp(
                                     initialFocusRequester = settingsDetailFocusRequester,
                                 )
 
-                                SettingsPage.ABOUT -> AboutScreen(
+                                SettingsPage.ABOUT, SettingsPage.ABOUT_PROJECT -> AboutScreen(
                                     connectedServerVersion = state.snapshot?.frigateVersion,
                                     onBack = {
                                         settingsReturnPageName = SettingsPage.ABOUT.name

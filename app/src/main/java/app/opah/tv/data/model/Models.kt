@@ -5,10 +5,11 @@ data class ConnectionProfile(
     val username: String,
     val rtspHostOverride: String? = null,
     val rtspPort: Int = 8554,
-) {
-    val usesUnauthenticatedFrigatePort: Boolean
-        get() = runCatching { java.net.URI(apiBaseUrl).port == 5000 }.getOrDefault(false)
-}
+    val withoutSignIn: Boolean = isDefaultFrigateInternalPort(apiBaseUrl),
+)
+
+internal fun isDefaultFrigateInternalPort(apiBaseUrl: String): Boolean =
+    runCatching { java.net.URI(apiBaseUrl).port == 5000 }.getOrDefault(false)
 
 data class FrigateUserProfile(
     val username: String,

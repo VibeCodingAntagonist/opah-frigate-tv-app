@@ -107,8 +107,8 @@ internal class TvAlertOverlayPresenter(
         inlineDelegate.value.unavailable(ticket)
     }
     fun showSetupPreview(identity: AndroidNotificationIdentity, appearance: AppSettings, canPresent: () -> Boolean, onShown: () -> Unit) {
-        owner.present(TvAlertOverlayRequest("local-setup", identity.tag, identity, "Opah setup preview",
-            "Fictional preview — no message was sent by Home Assistant", null, appearance,
+        owner.present(TvAlertOverlayRequest("local-setup", identity.tag, identity, "Sample TV pop-up",
+            "Preview from Opah", null, appearance,
             homeAssistant = true, priority = 0, buttons = emptyList(), canPresent = canPresent, onDismiss = {}, onShown = onShown))
     }
     suspend fun hasPending(identity: AndroidNotificationIdentity): Boolean = owner.contains(identity)

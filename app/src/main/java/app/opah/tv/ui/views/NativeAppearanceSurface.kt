@@ -16,7 +16,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
-import androidx.core.view.isVisible
 import app.opah.tv.R
 import app.opah.tv.data.model.AppearanceMode
 import app.opah.tv.data.model.CustomThemeColors
@@ -28,7 +27,6 @@ internal data class NativeAppearanceUiState(
     val colors: CustomThemeColors,
     val reducedMotion: Boolean,
     val highContrast: Boolean,
-    val subtleRoundedCorners: Boolean,
     val reducedTransparency: Boolean = false,
 )
 
@@ -47,9 +45,10 @@ internal class NativeAppearanceSurface(
     private val onColors: (CustomThemeColors) -> Unit,
     private val onReducedMotion: (Boolean) -> Unit,
     private val onHighContrast: (Boolean) -> Unit,
-    private val onSubtleRoundedCorners: (Boolean) -> Unit,
     private val onFocused: (String, View) -> Unit,
     private val onReducedTransparency: (Boolean) -> Unit = {},
+    val customEditor: Boolean = false,
+    onCustomize: () -> Unit = {},
 ) : LinearLayout(activity) {
     private val labels = mutableListOf<TextView>()
     private val preview = NativeThemePreviewView(activity)
@@ -64,16 +63,13 @@ internal class NativeAppearanceSurface(
     private val reduceMotion = toggle("Reduce motion") { onReducedMotion(!state.reducedMotion) }
     private val highContrast = toggle("High contrast") { onHighContrast(!state.highContrast) }
     private val reduceTransparency = toggle("Reduce transparency") { onReducedTransparency(!state.reducedTransparency) }
-    private val subtleCorners = toggle("Extra rounding") {
-        onSubtleRoundedCorners(!state.subtleRoundedCorners)
-    }.apply {
-        // Keep the saved focus key valid for people returning to this preference.
-        tag = "appearance:toggle:soft-corners"
-        onFocusChangeListener = focusListener(tag as String)
+    private val customizeTheme = settingControl("Customize theme", "appearance:customize", onCustomize)
+    private val useSavedTheme = settingControl("Use saved custom theme", "appearance:use-custom") {
+        onMode(AppearanceMode.CUSTOM)
     }
-
+    private val comfortControls = listOf(reduceMotion, highContrast, reduceTransparency)
+    private val colorTracks = listOf(accentHue, accentStrength, accentBrightness, backgroundHue, backgroundStrength, backgroundBrightness)
     private var state = initialState
-    private val customPanel = LinearLayout(activity).apply { orientation = VERTICAL }
     private val editor = ScrollView(activity).apply {
         isFocusable = false
         clipToPadding = true
@@ -98,66 +94,71 @@ internal class NativeAppearanceSurface(
             orientation = VERTICAL
             setPadding(activity.dp(3), activity.dp(2), activity.dp(3), activity.dp(8))
         }
-        content.addView(label("Choose a look", 16f, bold = true))
-        content.addView(LinearLayout(activity).apply {
-            orientation = HORIZONTAL
-            AppearanceMode.entries.forEach { mode ->
-                val choice = NativeThemeSwatchView(activity).apply {
-                    tag = "appearance:mode:" + mode.name
-                    isFocusable = true
-                    isClickable = true
-                    contentDescription = modeLabel(mode) + " theme"
-                    setOnClickListener { onMode(mode) }
-                    onFocusChangeListener = focusListener(tag as String)
+        if (!customEditor) {
+            content.addView(LinearLayout(activity).apply {
+                orientation = HORIZONTAL
+                listOf(AppearanceMode.SYSTEM, AppearanceMode.DARK, AppearanceMode.LIGHT).forEach { mode ->
+                    val choice = NativeThemeSwatchView(activity).apply {
+                        tag = "appearance:mode:" + mode.name
+                        isFocusable = true
+                        isClickable = true
+                        contentDescription = modeLabel(mode) + " theme"
+                        setOnClickListener { onMode(mode) }
+                        onFocusChangeListener = focusListener(tag as String)
+                    }
+                    modeChoices[mode] = choice
+                    addView(choice, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = activity.dp(5) })
                 }
-                modeChoices[mode] = choice
-                addView(choice, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = activity.dp(5) })
-            }
-        }, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = activity.dp(5) })
+            })
+        }
         content.addView(preview, LayoutParams(LayoutParams.MATCH_PARENT, activity.dp(116)).apply {
             topMargin = activity.dp(8)
             bottomMargin = activity.dp(8)
         })
-        content.addView(label("Comfort and clarity", 16f, bold = true))
-        content.addView(GridLayout(activity).apply {
-            columnCount = 2
-            listOf(reduceMotion, highContrast, reduceTransparency, subtleCorners).forEachIndexed { index, control ->
-                addView(control, GridLayout.LayoutParams(GridLayout.spec(index / 2), GridLayout.spec(index % 2, 1f)).apply {
-                    width = 0
-                    height = LayoutParams.WRAP_CONTENT
-                    setMargins(0, activity.dp(6), activity.dp(5), 0)
-                })
-            }
-        })
-        customPanel.addView(label("Custom palette", 16f, bold = true).apply {
-            setPadding(0, activity.dp(10), 0, activity.dp(6))
-        })
-        customPanel.addView(GridLayout(activity).apply {
-            columnCount = 3
-            presets.forEachIndexed { index, preset ->
-                val swatch = NativeThemeSwatchView(activity).apply {
-                    tag = "appearance:preset:" + preset.name.lowercase()
-                    isFocusable = true
-                    isClickable = true
-                    contentDescription = preset.name + " palette"
-                    setOnClickListener { onColors(ThemeColorPolicy.sanitize(preset.colors)) }
-                    onFocusChangeListener = focusListener(tag as String)
+        if (customEditor) {
+            content.addView(label("Palettes", 16f, bold = true).apply {
+                setPadding(0, 0, 0, activity.dp(6))
+            })
+            content.addView(GridLayout(activity).apply {
+                columnCount = 3
+                presets.forEachIndexed { index, preset ->
+                    val swatch = NativeThemeSwatchView(activity).apply {
+                        tag = "appearance:preset:" + preset.name.lowercase()
+                        isFocusable = true
+                        isClickable = true
+                        contentDescription = preset.name + " palette"
+                        setOnClickListener { onColors(ThemeColorPolicy.sanitize(preset.colors)) }
+                        onFocusChangeListener = focusListener(tag as String)
+                    }
+                    presetChoices[preset.name] = swatch
+                    addView(swatch, GridLayout.LayoutParams(GridLayout.spec(index / 3), GridLayout.spec(index % 3, 1f)).apply {
+                        width = 0
+                        height = LayoutParams.WRAP_CONTENT
+                        setMargins(0, 0, activity.dp(5), activity.dp(5))
+                    })
                 }
-                presetChoices[preset.name] = swatch
-                addView(swatch, GridLayout.LayoutParams(GridLayout.spec(index / 3), GridLayout.spec(index % 3, 1f)).apply {
-                    width = 0
-                    height = LayoutParams.WRAP_CONTENT
-                    setMargins(0, 0, activity.dp(5), activity.dp(5))
-                })
-            }
-        })
-        customPanel.addView(label("Fine-tune colors", 16f, bold = true).apply {
-            setPadding(0, activity.dp(8), 0, activity.dp(5))
-        })
-        listOf(accentHue, accentStrength, accentBrightness, backgroundHue, backgroundStrength, backgroundBrightness).forEach {
-            customPanel.addView(it)
+            })
+            content.addView(useSavedTheme)
+            content.addView(label("Fine-tune colors", 16f, bold = true).apply {
+                setPadding(0, activity.dp(8), 0, activity.dp(5))
+            })
+            colorTracks.forEach(content::addView)
+        } else {
+            content.addView(label("Comfort and clarity", 16f, bold = true))
+            content.addView(GridLayout(activity).apply {
+                columnCount = 2
+                comfortControls.forEachIndexed { index, control ->
+                    addView(control, GridLayout.LayoutParams(GridLayout.spec(index / 2), GridLayout.spec(index % 2, 1f)).apply {
+                        width = 0
+                        height = LayoutParams.WRAP_CONTENT
+                        setMargins(0, activity.dp(6), activity.dp(5), 0)
+                    })
+                }
+            })
+            content.addView(customizeTheme, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+                topMargin = activity.dp(8)
+            })
         }
-        content.addView(customPanel)
         editor.addView(content, FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         addView(editor, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         update(initialState)
@@ -181,52 +182,55 @@ internal class NativeAppearanceSurface(
                 state.mode == AppearanceMode.CUSTOM && colors == safe,
             )
         }
-        preview.show(NativeTheme.palette.focus, NativeTheme.palette.background)
-        val accent = ThemeColorPolicy.toHsl(customAccent)
-        val background = ThemeColorPolicy.toHsl(customBackground)
-        accentHue.show("Accent hue", "${accent.hue}°", hueColors(), accent.hue / 30, NativeAdjustmentRange(0f, 359f, accent.hue.toFloat(), wraps = true))
-        accentStrength.show("Accent strength", "${accent.saturation}%", saturationColors(accent), accent.saturation / 10, NativeAdjustmentRange(0f, 100f, accent.saturation.toFloat()))
-        accentBrightness.show("Accent brightness", "${accent.lightness}%", lightnessColors(accent), accent.lightness / 10, lightnessRange(accent.lightness))
-        backgroundHue.show("Background hue", "${background.hue}°", hueColors(lightness = 28), background.hue / 30, NativeAdjustmentRange(0f, 359f, background.hue.toFloat(), wraps = true))
-        backgroundStrength.show(
-            "Background strength",
-            "${background.saturation}%",
-            saturationColors(background),
-            background.saturation / 10,
-            NativeAdjustmentRange(0f, 100f, background.saturation.toFloat()),
-        )
-        backgroundBrightness.show(
-            "Background brightness",
-            "${background.lightness}%",
-            lightnessColors(background),
-            background.lightness / 10,
-            lightnessRange(background.lightness),
-        )
-        reduceMotion.text = activity.getString(R.string.native_reduce_motion_state, activity.getString(if (state.reducedMotion) R.string.native_state_on else R.string.native_state_off))
-        reduceMotion.isSelected = state.reducedMotion
-        highContrast.text = activity.getString(R.string.native_high_contrast_state, activity.getString(if (state.highContrast) R.string.native_state_on else R.string.native_state_off))
-        highContrast.isSelected = state.highContrast
-        subtleCorners.text = activity.getString(R.string.native_extra_rounding_state, activity.getString(if (state.subtleRoundedCorners) R.string.native_state_on else R.string.native_state_off))
-        subtleCorners.isSelected = state.subtleRoundedCorners
-        reduceTransparency.text = activity.getString(R.string.native_reduce_transparency_state, activity.getString(if (state.reducedTransparency) R.string.native_state_on else R.string.native_state_off))
-        reduceTransparency.isSelected = state.reducedTransparency
-        customPanel.isVisible = state.mode == AppearanceMode.CUSTOM
+        if (customEditor) {
+            val accent = ThemeColorPolicy.toHsl(customAccent)
+            val background = ThemeColorPolicy.toHsl(customBackground)
+            accentHue.show("Accent hue", "${accent.hue}°", hueColors(), accent.hue / 30, NativeAdjustmentRange(0f, 359f, accent.hue.toFloat(), wraps = true))
+            accentStrength.show("Accent strength", "${accent.saturation}%", saturationColors(accent), accent.saturation / 10, NativeAdjustmentRange(0f, 100f, accent.saturation.toFloat()))
+            accentBrightness.show("Accent brightness", "${accent.lightness}%", lightnessColors(accent), accent.lightness / 10, lightnessRange(accent.lightness))
+            backgroundHue.show("Background hue", "${background.hue}°", hueColors(lightness = 28), background.hue / 30, NativeAdjustmentRange(0f, 359f, background.hue.toFloat(), wraps = true))
+            backgroundStrength.show(
+                "Background strength",
+                "${background.saturation}%",
+                saturationColors(background),
+                background.saturation / 10,
+                NativeAdjustmentRange(0f, 100f, background.saturation.toFloat()),
+            )
+            backgroundBrightness.show(
+                "Background brightness",
+                "${background.lightness}%",
+                lightnessColors(background),
+                background.lightness / 10,
+                lightnessRange(background.lightness),
+            )
+            useSavedTheme.isSelected = state.mode == AppearanceMode.CUSTOM
+        } else {
+            reduceMotion.text = activity.getString(R.string.native_reduce_motion_state, activity.getString(if (state.reducedMotion) R.string.native_state_on else R.string.native_state_off))
+            reduceMotion.isSelected = state.reducedMotion
+            highContrast.text = activity.getString(R.string.native_high_contrast_state, activity.getString(if (state.highContrast) R.string.native_state_on else R.string.native_state_off))
+            highContrast.isSelected = state.highContrast
+            reduceTransparency.text = activity.getString(R.string.native_reduce_transparency_state, activity.getString(if (state.reducedTransparency) R.string.native_state_on else R.string.native_state_off))
+            reduceTransparency.isSelected = state.reducedTransparency
+            customizeTheme.isSelected = state.mode == AppearanceMode.CUSTOM
+        }
         refreshTheme()
     }
 
     fun refreshTheme() {
         labels.forEach { it.setTextColor(NativeTheme.palette.text) }
-        listOf(reduceMotion, highContrast, reduceTransparency, subtleCorners).forEach {
+        (if (customEditor) listOf(useSavedTheme) else comfortControls + customizeTheme).forEach {
             it.setTextColor(NativeTheme.palette.text)
             it.background = activity.nativeFlatFocusableBackground()
             it.contentDescription = it.text.toString().replace("   ", ", ")
         }
         modeChoices.values.forEach { it.refreshTheme() }
         presetChoices.values.forEach { it.refreshTheme() }
-        listOf(accentHue, accentStrength, accentBrightness, backgroundHue, backgroundStrength, backgroundBrightness).forEach {
-            it.refreshTheme()
+        if (customEditor) {
+            colorTracks.forEach { it.refreshTheme() }
+            preview.show(state.colors.accentArgb, state.colors.backgroundArgb)
+        } else {
+            preview.show(NativeTheme.palette.focus, NativeTheme.palette.background)
         }
-        preview.show(NativeTheme.palette.focus, NativeTheme.palette.background)
     }
 
     fun capturePosition() = NativeAppearancePosition(findFocus()?.tag as? String, editor.scrollY)
@@ -235,8 +239,9 @@ internal class NativeAppearanceSurface(
 
     fun restorePosition(position: NativeAppearancePosition) {
         editor.post {
-            position.focusedKey?.let { findViewWithTag<View>(it) }
-                ?.takeIf { it.isShown && it.isFocusable && it.isEnabled }?.requestFocus()
+            val focused = position.focusedKey?.let { findViewWithTag<View>(it) }
+                ?.takeIf { it.isShown && it.isFocusable && it.isEnabled } ?: return@post
+            focused.requestFocus()
             editor.scrollTo(0, position.scrollY.coerceAtLeast(0))
         }
     }
@@ -272,7 +277,7 @@ internal class NativeAppearanceSurface(
         layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = activity.dp(5) }
     }
 
-    private fun toggle(label: String, onClick: () -> Unit) = TextView(activity).apply {
+    private fun settingControl(label: String, key: String, onClick: () -> Unit) = TextView(activity).apply {
         text = label
         textSize = 14f
         gravity = Gravity.CENTER_VERTICAL
@@ -283,9 +288,14 @@ internal class NativeAppearanceSurface(
         background = activity.nativeFlatFocusableBackground()
         isFocusable = true
         isClickable = true
-        tag = "appearance:toggle:${label.lowercase().replace(' ', '-')}"
+        tag = key
         setOnClickListener { onClick() }
-        onFocusChangeListener = focusListener(tag as String)
+        onFocusChangeListener = focusListener(key)
+    }
+
+    private fun toggle(label: String, onClick: () -> Unit) = settingControl(
+        label, "appearance:toggle:${label.lowercase().replace(' ', '-')}", onClick,
+    ).apply {
         accessibilityDelegate = object : View.AccessibilityDelegate() {
             override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfo) {
                 super.onInitializeAccessibilityNodeInfo(host, info)

@@ -37,9 +37,11 @@ class FrigateApiClient(
     private val cookieJar: SessionCookieStore,
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) : FrigateGateway {
+    private val noSignInClient by lazy { httpClient.newBuilder().cookieJar(CookieJar.NO_COOKIES).build() }
+
     override suspend fun login(profile: ConnectionProfile, password: String): FrigateUserProfile {
         cookieJar.clear()
-        if (profile.usesUnauthenticatedFrigatePort) return getProfile(profile)
+        if (profile.withoutSignIn) return getProfile(profile)
         require(password.isNotEmpty()) { "Password is required." }
         val payload = buildString {
             append("{\"user\":")
@@ -69,7 +71,7 @@ class FrigateApiClient(
     }
 
     override suspend fun refreshSession(profile: ConnectionProfile): FrigateUserProfile {
-        if (profile.usesUnauthenticatedFrigatePort) return getProfile(profile)
+        if (profile.withoutSignIn) return getProfile(profile)
         if (!cookieJar.hasUnexpiredSession()) {
             throw AuthenticationExpiredException("The saved Frigate session has expired. Sign in again.")
         }
@@ -78,7 +80,7 @@ class FrigateApiClient(
     }
 
     override suspend fun logout(profile: ConnectionProfile) {
-        if (!profile.usesUnauthenticatedFrigatePort) {
+        if (!profile.withoutSignIn) {
             runCatching {
                 execute(
                     Request.Builder().url(apiUrl(profile, "logout")).get().build(),
@@ -513,7 +515,10 @@ class FrigateApiClient(
     }
 
     private suspend fun getProfile(profile: ConnectionProfile): FrigateUserProfile {
-        val raw = executeText(Request.Builder().url(apiUrl(profile, "profile")).get().build())
+        val raw = executeText(
+            Request.Builder().url(apiUrl(profile, "profile")).get().build(),
+            client = if (profile.withoutSignIn) noSignInClient else httpClient,
+        )
         val obj = json.parseToJsonElement(raw) as? JsonObject
             ?: throw OpahException(
                 OpahFailure(
@@ -580,9 +585,9 @@ class FrigateApiClient(
         }
     }
 
-    private suspend fun executeText(request: Request): String = withContext(Dispatchers.IO) {
+    private suspend fun executeText(request: Request, client: OkHttpClient = httpClient): String = withContext(Dispatchers.IO) {
         try {
-            httpClient.newCall(request).execute().use { response ->
+            client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) throwStatus(response.code)
                 response.body.string()
             }

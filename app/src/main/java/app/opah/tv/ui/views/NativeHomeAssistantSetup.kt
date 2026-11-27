@@ -69,7 +69,9 @@ import androidx.lifecycle.LifecycleEventObserver
 private fun homeAssistantSignInAvailable(): Boolean =
     Build.VERSION.SDK_INT < 26 || WebView.getCurrentWebViewPackage() != null
 
-/** A connection form shared by the Connections page and the local presentation checks. */
+internal enum class HomeAssistantSettingsPart { ALL, CONNECTION, NOTIFICATIONS }
+
+/** A connection form shared by Settings and guided setup. */
 @SuppressLint("SetTextI18n")
 internal class NativeHomeAssistantSetup(
     private val activity: ComponentActivity,
@@ -80,12 +82,12 @@ internal class NativeHomeAssistantSetup(
     private val confirmDisconnect: ((() -> Unit) -> Unit) = { it() },
     private val signInAvailable: Boolean = homeAssistantSignInAvailable(),
     private val changePopupDuration: ((() -> Unit) -> Unit)? = null,
-    private val canEnableActions: () -> Boolean = {
-        (activity.application as? OpahApplication)?.container?.homeAssistantRichPolicy()?.actionsProtected == true
-    },
+    private val canSignIn: () -> Boolean = canManage,
     private val setupOnly: Boolean = false,
     private val closeWhenDetached: Boolean = true,
-    private val manageNotificationPause: (() -> Unit)? = null,
+    private val part: HomeAssistantSettingsPart = HomeAssistantSettingsPart.ALL,
+    private val openNotifications: (() -> Unit)? = null,
+    private val openPopupSettings: (() -> Unit)? = null,
 ) {
     private var embedded = false
     private var built = false
@@ -135,18 +137,21 @@ internal class NativeHomeAssistantSetup(
     private val actions = button("Allow automation buttons: Off") {
         if (!allowed()) return@button
         fun save(value: Boolean) { scope.launch {
-            if (!allowed() || value && !canEnableActions()) return@launch
+            if (!allowed()) return@launch
             try { connection.setRichNotifications(actions = value); render() }
             catch (_: Exception) { status.text = "Opah could not save this setting" }
         } }
         if (connection.allowActions()) save(false)
-        else if (!canEnableActions()) status.text = "Set a PIN and lock Home Assistant actions in Settings > Privacy"
         else android.app.AlertDialog.Builder(activity).setTitle("Allow automation buttons?")
-            .setMessage("Buttons can change your home and temporarily take remote control\nEach request needs your Opah PIN authorization")
+            .setMessage("Buttons can change your home and temporarily take remote control\nOpah asks for your PIN if you require it or Home Assistant requests it")
             .setNegativeButton("Keep off", null).setPositiveButton("Allow buttons") { _, _ -> save(true) }.show()
     }
     private val popups = button("Allow TV pop-ups") {
         if (!allowed()) return@button
+        if (openPopupSettings != null) {
+            openPopupSettings.invoke()
+            return@button
+        }
         runCatching { activity.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, "package:${activity.packageName}".toUri())) }
             .onFailure { status.text = "Open Android settings and allow Opah to appear over other apps" }
     }
@@ -157,6 +162,7 @@ internal class NativeHomeAssistantSetup(
     private val popupDuration = button("TV pop-up duration") {
         if (allowed()) changePopupDuration?.invoke { if (!closed) render() }
     }
+    private val notificationSettings = button("Message settings") { if (allowed()) openNotifications?.invoke() }
     private val insecureNotice = label("Your sign-in would travel without encryption\nContinue only on a private network you trust", 13f).apply { visibility = View.GONE }
     private val continueInsecure = button("Continue on this private network") { beginSignIn(allowHttp = true) }.apply { visibility = View.GONE }
     private val cancelInsecure = button("Cancel") { showInsecureConfirmation(false); signIn.requestFocus() }.apply { visibility = View.GONE }
@@ -219,15 +225,20 @@ internal class NativeHomeAssistantSetup(
         if (!embedded) root.addView(label("Home Assistant", 22f))
         root.addView(formScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             if (embedded) 0 else ViewGroup.LayoutParams.WRAP_CONTENT, if (embedded) 1f else 0f))
-        form.addView(label("Server address", 13f)); form.addView(address)
-        form.addView(label("TV name", 13f)); form.addView(deviceName)
         form.addView(status)
-        form.addView(signIn); form.addView(insecureNotice); form.addView(continueInsecure); form.addView(cancelInsecure)
-        form.addView(enabled); form.addView(details); form.addView(pictures); form.addView(actions)
-        if (!setupOnly) form.addView(label("Pictures and button labels need Show message details\nPictures also follow Opah privacy settings", 12f))
-        form.addView(notificationPermission); form.addView(popups); form.addView(popupDuration); form.addView(disconnect)
-        if (!setupOnly && manageNotificationPause != null) form.addView(button("Pause all TV notifications") { manageNotificationPause.invoke() })
-        if (!setupOnly) form.addView(label("Messages arrive while this TV is connected\nChoose this TV in your Home Assistant automations", 12f))
+        if (part != HomeAssistantSettingsPart.NOTIFICATIONS) {
+            form.addView(label("Server address", 13f)); form.addView(address)
+            form.addView(label("TV name", 13f)); form.addView(deviceName)
+            form.addView(signIn); form.addView(insecureNotice); form.addView(continueInsecure); form.addView(cancelInsecure)
+            if (!setupOnly) form.addView(disconnect)
+            if (openNotifications != null) form.addView(notificationSettings)
+        }
+        if (!setupOnly && part != HomeAssistantSettingsPart.CONNECTION) {
+            form.addView(enabled); form.addView(details); form.addView(pictures); form.addView(actions)
+            form.addView(label("Pictures and button labels need Show message details\nPictures also follow Opah privacy settings", 12f))
+            form.addView(notificationPermission); form.addView(popups)
+            if (changePopupDuration != null) form.addView(popupDuration)
+        }
         if (!embedded) root.addView(button("Done") { dialog?.dismiss() })
         root.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(v: View) = Unit
@@ -258,6 +269,7 @@ internal class NativeHomeAssistantSetup(
     }
 
     private fun allowed() = !closed && canManage()
+    private fun signInAllowed() = !closed && canSignIn()
     val signingIn: Boolean get() = browser != null || !connection.hasSession() && connection.state.value.phase == HomeAssistantConnectionPhase.CONNECTING
     fun leaveSetupStep() {
         signInJob?.cancel(); signInJob = null
@@ -268,6 +280,7 @@ internal class NativeHomeAssistantSetup(
         if (closed) return
         val state = connection.state.value
         val configured = connection.hasSession()
+        notificationSettings.visibility = if (configured && allowed()) View.VISIBLE else View.GONE
         address.isEnabled = !configured
         deviceName.isEnabled = !configured
         signIn.visibility = if (configured || !signInAvailable || insecureNotice.isVisible) View.GONE else View.VISIBLE
@@ -282,7 +295,7 @@ internal class NativeHomeAssistantSetup(
         val seconds = TvAlertOverlaySettingsStore(activity).load().displayDurationSeconds
         popupDuration.text = if (seconds == 0) "TV pop-ups: Off" else "TV pop-up duration: $seconds seconds"
         val busy = !configured && state.phase == HomeAssistantConnectionPhase.CONNECTING
-        signIn.isEnabled = !busy && allowed()
+        signIn.isEnabled = !busy && signInAllowed()
         enabled.isEnabled = !busy && allowed()
         details.isEnabled = !busy && allowed()
         pictures.isEnabled = !busy && allowed()
@@ -303,14 +316,15 @@ internal class NativeHomeAssistantSetup(
             HomeAssistantConnectionPhase.CONNECTING -> "Connecting to Home Assistant"
             HomeAssistantConnectionPhase.CONNECTED -> "Connected — Home Assistant can send messages to this TV"
             HomeAssistantConnectionPhase.RETRYING -> "Reconnecting to Home Assistant"
-            HomeAssistantConnectionPhase.SIGN_IN_REQUIRED -> if (setupOnly) "Open Home Assistant in Connections to reconnect" else "Disconnect and sign in again"
+            HomeAssistantConnectionPhase.SIGN_IN_REQUIRED -> if (setupOnly || part == HomeAssistantSettingsPart.NOTIFICATIONS)
+                "Open Settings, then Connections to sign in again" else "Disconnect and sign in again"
             HomeAssistantConnectionPhase.ERROR -> "Home Assistant needs attention"
         }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun beginSignIn(allowHttp: Boolean = false) {
-        if (!allowed() || !signInAvailable) return
+        if (!signInAllowed() || !signInAvailable) return
         val pending = try {
             val name = deviceName.text.toString().safeNotificationText(64).replace('\n', ' ').takeIf(String::isNotBlank)
                 ?: run { status.text = "Enter a name for this TV"; return }
@@ -376,7 +390,7 @@ internal class NativeHomeAssistantSetup(
     }
 
     private fun finishSignIn(pending: HomeAssistantSignIn, url: String) {
-        if (!allowed() || callbackTaken || attempt !== pending) return
+        if (!signInAllowed() || callbackTaken || attempt !== pending) return
         callbackTaken = true
         val code = try { pending.takeCode(url, SystemClock.elapsedRealtime()) }
         catch (error: HomeAssistantException) { endLogin(error.problem.explanation); return }
@@ -385,7 +399,11 @@ internal class NativeHomeAssistantSetup(
         resize(login = false)
         signInJob = scope.launch {
             try {
-                connection.connect(pending, code, HomeAssistantDevice(Build.MANUFACTURER, Build.MODEL, Build.VERSION.RELEASE, BuildConfig.VERSION_NAME), canManage)
+                connection.connect(
+                    pending, code,
+                    HomeAssistantDevice(Build.MANUFACTURER, Build.MODEL, Build.VERSION.RELEASE, BuildConfig.VERSION_NAME),
+                    ::signInAllowed,
+                )
                 render()
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { status.text = "Home Assistant could not finish connecting" }

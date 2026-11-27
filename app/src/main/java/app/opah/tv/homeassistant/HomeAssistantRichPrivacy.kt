@@ -34,9 +34,14 @@ internal fun homeAssistantRichPolicy(snapshot: PrivacySnapshot, hasFrigateProfil
         else -> HomeAssistantImageDisclosure.NONE
     }
     val protected = snapshot.pinConfigured && PinScope.HOME_ASSISTANT_ACTIONS in snapshot.protectedScopes
-    val proof = snapshot.pinUnlockProof?.takeIf { it.privacyEpoch == snapshot.epoch }
     val authority = if (haOnly) "ha-only" else
         "${transport.generation}/${(transport.profileState as? RealtimeProfileState.Ready)?.profile?.id}/${transport.authorizationScopeEpoch}/${evidence?.revision}"
-    return HomeAssistantRichPolicy(snapshot.epoch, HomeAssistantDisclosure.DETAILS, image, protected,
-        protected && PinScope.HOME_ASSISTANT_ACTIONS in proof?.scopes.orEmpty(), authority)
+    return HomeAssistantRichPolicy(
+        epoch = snapshot.epoch,
+        disclosure = HomeAssistantDisclosure.DETAILS,
+        images = image,
+        pinConfigured = snapshot.pinConfigured,
+        requirePinForAllActions = protected,
+        imageAuthority = authority,
+    )
 }

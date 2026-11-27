@@ -1,6 +1,7 @@
 package app.opah.tv.data
 
 import app.opah.tv.data.model.ConnectionProfile
+import app.opah.tv.data.model.isDefaultFrigateInternalPort
 import java.net.URI
 import java.util.Locale
 
@@ -14,7 +15,7 @@ internal fun ConnectionProfile.compatibilityIdentityComponents(): Map<String, St
         "http" -> 80
         else -> error("Frigate URL is invalid")
     }
-    return mapOf(
+    val components = mapOf(
         "api_scheme" to scheme,
         "api_host" to apiHost,
         "api_port" to apiPort.toString(),
@@ -23,4 +24,8 @@ internal fun ConnectionProfile.compatibilityIdentityComponents(): Map<String, St
         "rtsp_host" to (rtspHostOverride ?: apiHost).lowercase(Locale.ROOT),
         "rtsp_port" to rtspPort.toString(),
     )
+    // Keep legacy bindings stable while separating access modes on the same address.
+    return if (withoutSignIn != isDefaultFrigateInternalPort(apiBaseUrl)) {
+        components + ("without_sign_in" to withoutSignIn.toString())
+    } else components
 }

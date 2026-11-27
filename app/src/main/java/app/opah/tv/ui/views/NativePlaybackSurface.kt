@@ -177,7 +177,6 @@ internal class NativePlaybackSurface(
     val request: PlaybackRequest,
     private val preferRtpTcp: Boolean,
     startMuted: Boolean,
-    private val diagnosticsEnabled: Boolean = false,
     initialControls: List<NativePlaybackControl> = emptyList(),
     initialActionMessage: String? = null,
     pictureInPictureAvailable: Boolean = false,
@@ -190,8 +189,10 @@ internal class NativePlaybackSurface(
     initialLiveRecoveryActions: NativeLiveRecoveryActions = NativeLiveRecoveryActions(),
     private val prepareHttpLive: suspend (PlaybackRequest) -> app.opah.tv.playback.AuthenticatedHttpLive? = { null },
     private val httpsPlayerFactory: (app.opah.tv.playback.AuthenticatedHttpLive, app.opah.tv.playback.media3.ExclusiveVideoOutputLease) -> app.opah.tv.playback.HttpsLivePlayer =
-        { live, lease -> app.opah.tv.playback.HttpsLivePlayer(activity, (activity.application as OpahApplication).container.httpClient, lease, live.isAuthorized,
-            localTransport = live.localTransport) },
+        { live, lease ->
+            val client = live.clientFor((activity.application as OpahApplication).container.httpClient)
+            app.opah.tv.playback.HttpsLivePlayer(activity, client, lease, live.isAuthorized, localTransport = live.localTransport)
+        },
     private val livePlayerFactory: LivePlayerFactory = (activity.application as OpahApplication).container.livePlayerFactory,
     private val openLiveSession: suspend (SingleLivePlaybackRequestId, PlayerViewMedia3VideoOutputTarget, Boolean) -> SingleLivePlaybackSession =
         { id, output, videoOnly -> (activity.application as OpahApplication).container.singleLivePlaybackCoordinator.open(id, output, videoOnly) },
@@ -200,6 +201,10 @@ internal class NativePlaybackSurface(
     private val application = activity.application as OpahApplication
     private val documentationPlayback = BuildConfig.DOCUMENTATION_MODE &&
         request.uri.startsWith(DOCUMENTATION_URI_PREFIX)
+    private val birdseye = request.stretchPreferenceKey == app.opah.tv.playback.BIRDSEYE_STRETCH_PREFERENCE_KEY
+    private val screenAwake = NativePlaybackScreenAwake(activity, this, enabled = !documentationPlayback && !request.compatibilityTest)
+    private val awakeStream = screenAwake.openStream()
+    private var awakeSessionActive = false
     private val playerView = PlayerView(activity).apply {
         useController = false
         resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -333,14 +338,6 @@ internal class NativePlaybackSurface(
             LinearLayout.LayoutParams(0, activity.dp(3), 1f).apply { marginStart = activity.dp(8) },
         )
     }
-    private val diagnostics = TextView(activity).apply {
-        setTextColor(0xFFE6F0FB.toInt())
-        textSize = 12f
-        background = activity.nativeGlassOverlayBackground()
-        setPadding(activity.dp(10), activity.dp(7), activity.dp(10), activity.dp(7))
-        maxWidth = activity.dp(520)
-        visibility = View.GONE
-    }
     private var player: ExoPlayer? = null
     private var liveJob: Job? = null
     private var httpsBackend: app.opah.tv.playback.HttpsLivePlayer? = null
@@ -364,7 +361,6 @@ internal class NativePlaybackSurface(
     private var pictureInPictureActive = false
     private var chromeVisible = true
     private var moreExpanded = false
-    private var diagnosticsVisible = false
     private var chromeHideJob: Job? = null
     private val heldKeys = mutableSetOf<Int>()
     private var revealKey: Int? = null
@@ -407,13 +403,6 @@ internal class NativePlaybackSurface(
         isEnabled = false
         alpha = 0.45f
         visibility = if (pictureInPictureAvailable && request.kind == PlaybackKind.LIVE) View.VISIBLE else View.GONE
-    }
-    private val diagnosticButton = controlButton(
-        "Info",
-        R.drawable.ic_playback_info,
-        "Playback information",
-    ) { toggleDiagnostics() }.apply {
-        visibility = if (diagnosticsEnabled) View.VISIBLE else View.GONE
     }
     private val moreButton = controlButton("More", R.drawable.ic_more, "More playback actions") { toggleMoreControls() }.apply {
         tag = "more"
@@ -476,7 +465,6 @@ internal class NativePlaybackSurface(
         primaryControls.addView(audio)
         primaryControls.addView(retry)
         primaryControls.addView(pictureInPicture)
-        primaryControls.addView(diagnosticButton)
         primaryControls.addView(moreButton)
         bottomPanel = NativePlaybackOverlayColumn(activity, minimumDp = 320).apply {
             tag = "playback:controls"
@@ -503,13 +491,6 @@ internal class NativePlaybackSurface(
                 bottomMargin = activity.dp(24)
             },
         )
-        addView(
-            diagnostics,
-            LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
-                topMargin = activity.dp(24)
-                marginEnd = activity.dp(36)
-            },
-        )
         if (documentationPlayback) {
             startDocumentationPlayback()
         } else if (request.httpsLiveRequestId != null) {
@@ -529,7 +510,6 @@ internal class NativePlaybackSurface(
             }
         }
         updateControls(initialControls, initialActionMessage, initialFeedbackPending)
-        updateDiagnostics()
         if (request.compatibilityTest) {
             bottomPanel.visibility = View.GONE
         } else {
@@ -640,6 +620,8 @@ internal class NativePlaybackSurface(
 
     fun close() {
         closed = true
+        awakeSessionActive = false
+        screenAwake.close()
         stopHttpsPlayback()
         selectTarget?.isPressed = false
         selectTarget = null
@@ -667,7 +649,6 @@ internal class NativePlaybackSurface(
             chromeHideJob?.cancel()
             topPanel.visibility = View.GONE
             bottomPanel.visibility = View.GONE
-            diagnostics.visibility = View.GONE
         } else {
             showChrome(requestFocus = false)
         }
@@ -696,9 +677,7 @@ internal class NativePlaybackSurface(
         heldKeys.clear()
         revealKey = null
         moreExpanded = false
-        diagnosticsVisible = false
         updateMoreControlsVisibility()
-        diagnosticButton.isSelected = false
         hideChrome(force = true)
         return true
     }
@@ -845,11 +824,6 @@ internal class NativePlaybackSurface(
 
     private fun toggleMoreControls() {
         moreExpanded = !moreExpanded
-        if (moreExpanded) {
-            diagnosticsVisible = false
-            diagnostics.visibility = View.GONE
-            diagnosticButton.isSelected = false
-        }
         updateMoreControlsVisibility()
         if (moreExpanded) {
             val target = (0 until moreControls.childCount)
@@ -867,24 +841,11 @@ internal class NativePlaybackSurface(
         moreButton.isSelected = moreExpanded
     }
 
-    private fun toggleDiagnostics() {
-        diagnosticsVisible = !diagnosticsVisible
-        if (diagnosticsVisible) {
-            moreExpanded = false
-            updateMoreControlsVisibility()
-        }
-        diagnostics.visibility = if (diagnosticsVisible && chromeVisible) View.VISIBLE else View.GONE
-        diagnosticButton.isSelected = diagnosticsVisible
-        updateDiagnostics()
-        if (diagnosticsVisible) chromeHideJob?.cancel() else scheduleChromeHide()
-    }
-
     private fun showChrome(requestFocus: Boolean) {
         if (pictureInPictureActive) return
         chromeVisible = true
         topPanel.visibility = View.VISIBLE
         bottomPanel.visibility = if (request.compatibilityTest) View.GONE else View.VISIBLE
-        diagnostics.visibility = if (diagnosticsVisible) View.VISIBLE else View.GONE
         val focused = findFocus()
         if (
             !request.compatibilityTest &&
@@ -901,7 +862,6 @@ internal class NativePlaybackSurface(
         chromeVisible = false
         topPanel.visibility = View.GONE
         bottomPanel.visibility = View.GONE
-        diagnostics.visibility = View.GONE
         requestFocus()
     }
 
@@ -916,11 +876,23 @@ internal class NativePlaybackSurface(
     }
 
     private fun canHideChrome(): Boolean = !closed && !request.compatibilityTest &&
-        !pictureInPictureActive && !interactionOverlayOpen && !moreExpanded && !diagnosticsVisible && !setupRecoveryVisible &&
+        !pictureInPictureActive && !interactionOverlayOpen && !moreExpanded && !setupRecoveryVisible &&
         heldKeys.isEmpty() && revealKey == null && selectTarget == null && !feedbackPending &&
         hasWindowFocus() && player?.isPlaying == true
 
+    private fun beginAwakePlayback() {
+        if (closed) return
+        awakeSessionActive = true
+        screenAwake.awaitPlayer(awakeStream)
+    }
+
+    private fun endAwakePlayback() {
+        awakeSessionActive = false
+        screenAwake.stopStream(awakeStream)
+    }
+
     private fun startDirectPlayback() {
+        beginAwakePlayback()
         retry.visibility = View.GONE
         status.setText(R.string.native_playback_starting)
         runCatching {
@@ -954,22 +926,28 @@ internal class NativePlaybackSurface(
                 }
             }
         }.onSuccess(::attachPlayer).onFailure {
+            endAwakePlayback()
             releaseDirectPlayback()
             status.setText(R.string.native_playback_start_failed)
+            if (birdseye) {
+                retry.visibility = View.VISIBLE
+                showChrome(requestFocus = false)
+            }
         }
     }
 
     private fun stopHttpsPlayback(): Boolean {
+        endAwakePlayback()
         val backend = httpsBackend ?: return true
         httpsBackend = null
         return backend.close()
     }
 
     private fun showHttpsFailure(reason: app.opah.tv.playback.HttpsLiveFailure) {
+        endAwakePlayback()
         if (reason == app.opah.tv.playback.HttpsLiveFailure.ACCESS_CHANGED) {
             title.setText(R.string.native_https_title)
             playerView.visibility = View.INVISIBLE
-            diagnosticsVisible = false
         }
         recoverySizeOnly = reason == app.opah.tv.playback.HttpsLiveFailure.VIDEO_SIZE
         status.setText(when (reason) {
@@ -990,6 +968,7 @@ internal class NativePlaybackSurface(
     private fun startHttpsPlayback() {
         liveJob = activity.lifecycleScope.launch {
             activity.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                beginAwakePlayback()
                 showSetupRecovery(false)
                 recoverySizeOnly = false
                 if (request.kind != PlaybackKind.LIVE || request.compatibilityTest || request.liveCompatibilityRequestId != null) {
@@ -998,7 +977,7 @@ internal class NativePlaybackSurface(
                 }
                 status.setText(R.string.native_https_connecting)
                 val live = try { prepareHttpLive(request) }
-                catch (cancelled: CancellationException) { throw cancelled }
+                catch (cancelled: CancellationException) { endAwakePlayback(); throw cancelled }
                 catch (_: app.opah.tv.playback.LocalLiveUnavailableException) {
                     showHttpsFailure(app.opah.tv.playback.HttpsLiveFailure.LOCAL_UNAVAILABLE)
                     return@repeatOnLifecycle
@@ -1069,7 +1048,7 @@ internal class NativePlaybackSurface(
                         stopHttpsPlayback()
                         detachPlayer()
                     }
-                } finally { live.close() }
+                } finally { endAwakePlayback(); live.close() }
             }
         }
     }
@@ -1089,6 +1068,7 @@ internal class NativePlaybackSurface(
     private fun startCompatibilityPlayback(rawRequestId: String) {
         liveJob = activity.lifecycleScope.launch {
             activity.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                beginAwakePlayback()
                 compatibilityTestExitScheduled = false
                 showSetupRecovery(false)
                 retry.visibility = View.GONE
@@ -1110,9 +1090,11 @@ internal class NativePlaybackSurface(
                         request.compatibilityTestVideoOnly,
                     )
                 } catch (cancelled: CancellationException) {
+                    endAwakePlayback()
                     liveConnectionPreparing = false
                     throw cancelled
                 } catch (_: Exception) {
+                    endAwakePlayback()
                     liveConnectionPreparing = false
                     status.setText(R.string.native_live_start_failed)
                     return@repeatOnLifecycle
@@ -1159,6 +1141,9 @@ internal class NativePlaybackSurface(
                             is PlaybackCompatibilityState.PresentingSnapshot -> "Confirming video output"
                         }
                         val result = (state as? PlaybackCompatibilityState.Finished)?.result
+                        if (result != null && result !is PlaybackResult.VerifiedLive && result !is PlaybackResult.UnpersistedLive) {
+                            endAwakePlayback()
+                        }
                         val denied = result?.let(::nativePlaybackAccessDenied) == true
                         if (result != null && automaticRecoveryUsed) recoverySizeOnly = nativePlaybackSizeRejected(result)
                         showSetupRecovery(denied || result?.let(::nativePlaybackMissingSetup) != null ||
@@ -1177,6 +1162,7 @@ internal class NativePlaybackSurface(
                         }
                     }
                 } finally {
+                    endAwakePlayback()
                     liveConnectionPreparing = false
                     withContext(NonCancellable) { session.close() }
                     detachPlayer()
@@ -1195,6 +1181,7 @@ internal class NativePlaybackSurface(
         attached.playWhenReady = if (request.kind == PlaybackKind.RECORDED) recordedPlayWhenReady else true
         attached.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
+                if (closed || player !== attached) return
                 updatePlayPauseControl(attached.isPlaying)
                 when (playbackState) {
                     Player.STATE_IDLE -> Unit
@@ -1208,6 +1195,7 @@ internal class NativePlaybackSurface(
                         }
                     }
                     Player.STATE_ENDED -> {
+                        if (!coordinatorOwned) endAwakePlayback()
                         status.setText(R.string.native_playback_finished)
                         showChrome(requestFocus = false)
                         if (!playbackEndedReported) {
@@ -1216,15 +1204,21 @@ internal class NativePlaybackSurface(
                         }
                     }
                 }
-                updateDiagnostics()
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (closed || player !== attached) return
                 updatePlayPauseControl(isPlaying)
-                if (isPlaying) scheduleChromeHide() else showChrome(requestFocus = false)
+                if (isPlaying) {
+                    if (!birdseye || chromeHideJob?.isActive != true) scheduleChromeHide()
+                } else if (!birdseye) {
+                    showChrome(requestFocus = false)
+                }
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                if (closed || player !== attached) return
+                if (!coordinatorOwned) endAwakePlayback()
                 // The coordinator owns live failure/recovery text after its bounded ladder.
                 val failure = DefaultMedia3PlaybackFailureClassifier.classify(error)
                 if (!coordinatorOwned) status.setText(when {
@@ -1233,19 +1227,15 @@ internal class NativePlaybackSurface(
                     else -> R.string.native_playback_failed
                 })
                 retry.visibility = if (coordinatorOwned) View.GONE else View.VISIBLE
-                updateDiagnostics()
                 showChrome(requestFocus = false)
             }
-
-            override fun onEvents(player: Player, events: Player.Events) {
-                updateDiagnostics()
-            }
         })
+        if (awakeSessionActive) screenAwake.bindPlayer(awakeStream, attached)
         startProgressUpdates(attached)
-        updateDiagnostics()
     }
 
     private fun detachPlayer() {
+        if (awakeSessionActive) screenAwake.awaitPlayer(awakeStream) else screenAwake.stopStream(awakeStream)
         timelineRange = NativeTimelineRange()
         progressJob?.cancel()
         progressJob = null
@@ -1257,6 +1247,7 @@ internal class NativePlaybackSurface(
     }
 
     private fun releaseDirectPlayback() {
+        endAwakePlayback()
         val active = player
         if (request.kind == PlaybackKind.RECORDED && active != null) {
             recordedPositionMillis = active.currentPosition.coerceAtLeast(0L)
@@ -1379,6 +1370,7 @@ internal class NativePlaybackSurface(
 
     private fun retryPlayback() {
         if (closed || coordinatorOwned || !activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
+        screenAwake.explicitAction()
         releaseDirectPlayback()
         recordedPositionMillis = 0L
         recordedPlayWhenReady = true
@@ -1391,8 +1383,11 @@ internal class NativePlaybackSurface(
         if (active.isPlaying) {
             active.pause()
         } else {
+            screenAwake.explicitAction()
+            beginAwakePlayback()
             if (active.playbackState == Player.STATE_ENDED) active.seekTo(0L)
             active.play()
+            if (awakeSessionActive) screenAwake.bindPlayer(awakeStream, active)
         }
         updatePlayPauseControl(active.isPlaying)
         if (active.isPlaying) scheduleChromeHide() else showChrome(requestFocus = false)
@@ -1407,7 +1402,6 @@ internal class NativePlaybackSurface(
             iconRes = if (muted) R.drawable.ic_volume_off else R.drawable.ic_volume_on,
             accessibilityLabel = if (muted) "Turn on audio" else "Mute audio",
         )
-        updateDiagnostics()
     }
 
     private fun updatePlayPauseControl(isPlaying: Boolean) {
@@ -1445,28 +1439,6 @@ internal class NativePlaybackSurface(
         (0 until childCount)
             .map(::getChildAt)
             .firstOrNull { it.isEnabled && it.isFocusable && it.isVisible }
-
-    private fun updateDiagnostics() {
-        if (!diagnosticsEnabled) return
-        val active = player
-        val playbackState = when (active?.playbackState) {
-            Player.STATE_BUFFERING -> "Buffering"
-            Player.STATE_READY -> if (active.isPlaying) "Playing" else "Ready"
-            Player.STATE_ENDED -> "Finished"
-            else -> "Starting"
-        }
-        val video = active?.videoFormat
-        val audioFormat = active?.audioFormat
-        diagnostics.text = buildList {
-            add("$playbackState • ${if (request.kind == PlaybackKind.LIVE) "Live" else "Recording"}")
-            if (request.kind == PlaybackKind.LIVE) add(if (preferRtpTcp) "Reliable TCP transport preferred" else "Automatic transport")
-            video?.let { format ->
-                val size = if (format.width > 0 && format.height > 0) "${format.width} × ${format.height}" else "Size pending"
-                add("Video: ${format.sampleMimeType ?: "unknown"} • $size")
-            }
-            audioFormat?.let { format -> add("Audio: ${format.sampleMimeType ?: "unknown"}${if (muted) " • muted" else ""}") }
-        }.joinToString("\n")
-    }
 
     private fun enterPictureInPicture() {
         if (!pictureInPictureReady || automaticConnectionActive) return

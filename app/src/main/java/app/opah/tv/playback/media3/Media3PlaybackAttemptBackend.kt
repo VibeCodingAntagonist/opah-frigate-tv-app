@@ -706,7 +706,7 @@ internal class AutomaticMseResources(context: Context, val live: AuthenticatedHt
     authenticatedClient: okhttp3.OkHttpClient, private val enabled: () -> Boolean) {
     private val closed = AtomicBoolean()
     private val sources = java.util.concurrent.CopyOnWriteArrayList<app.opah.tv.playback.MseLiveDataSource>()
-    private val client = app.opah.tv.playback.httpLiveClient(live.localTransport?.client ?: authenticatedClient)
+    private val client = app.opah.tv.playback.httpLiveClient(live.clientFor(authenticatedClient))
     private val uri = live.uri.toHttpUrl()
     val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
         .setDataSourceFactory(androidx.media3.datasource.DataSource.Factory {

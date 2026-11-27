@@ -37,8 +37,7 @@ names, addresses, and data shown in the gallery are fictional examples.
 
 - A working Frigate server to view cameras and recordings
 - Android TV or Google TV running Android 7.0 or newer
-- A Frigate username and password for the recommended authenticated connection
-  (not needed for a direct port `5000` connection on a trusted private network)
+- A Frigate username and password for the recommended sign-in connection
 - Network access from the TV to the Frigate server
 
 Home Assistant is optional. You can connect it separately to receive messages
@@ -65,7 +64,7 @@ been changed or may be unsafe.
 ## Connect for the first time
 
 On a new installation, Opah opens guided setup. You can also open
-**Connections** > **Setup & checks** > **Start guided setup**. Choose Frigate,
+**Settings** > **Connections** and choose **Guided setup**. Choose Frigate,
 Home Assistant, or both. Either service can go first, and you can set up the
 other one later.
 
@@ -91,26 +90,28 @@ keep their separate opt-ins.
 Some TVs open Opah's app settings when you choose Android notification settings.
 Allow notifications there, return to Opah, and apply your choices in the guide.
 
-Use **Check setup** to check saved connections without repeating sign-in.
-Connection access, notification settings, TV pop-ups, previews, and actual
-Home Assistant delivery have separate results. A fictional preview tests
-appearance; it does not prove a message arrived from Home Assistant.
+In **Settings** > **Connections**, choose **Check setup** to check saved
+connections without signing in again. Opah shows what needs attention and
+offers a separate test for real Home Assistant messages.
 
 After a successful sign-in, choose **Cameras** to begin watching. Opah can
-securely remember the connection and sign in automatically. Open **Connections**
-> **Frigate** to change the server, sign out, or forget its saved information.
+securely remember the connection and sign in automatically. Open **Settings** >
+**Connections** > **Frigate** to change the server, sign out, or forget its saved information.
 
-If your TV and Frigate server share a trusted private network, Opah can also
-connect directly to Frigate port `5000` without an account. Enter an address
-such as `http://frigate.local:5000` and leave the username and password blank.
-This connection has full Frigate access, so never expose port `5000` to the
-internet. Most people should use Frigate's authenticated address instead.
+If you already have a Frigate address that works without signing in, enter the
+full address first, including `http://` or `https://`. Turn on **Connect without
+signing in**, then choose **Check connection**. Opah selects this mode
+automatically for port `5000`. This also works with a reverse proxy on a
+different port if the TV can already reach Frigate through it without a login.
+
+Use no-sign-in connections only on a trusted private network. They may give
+this TV full access to Frigate. Keep Frigate's unauthenticated service private.
 
 ## Find your way around
 
 To take a break from both Frigate alerts and Home Assistant messages, open
-**Connections** > **Notifications**. Choose **Pause for 15 minutes** or
-**Pause for 1 hour**. The page shows when notifications will resume, and
+**Settings** > **Notifications**. Choose **Pause all notifications** and pick
+**15 minutes** or **1 hour**. The page shows when notifications will resume, and
 **Resume notifications** ends the pause early.
 
 Pausing removes visible alerts and their buttons. Frigate keeps recording and
@@ -118,7 +119,7 @@ Home Assistant automations keep running. Existing Frigate snoozes and schedules
 stay in place, and paused notifications are not replayed when you resume.
 
 After Frigate is connected, Opah opens on **Cameras**, with **Activity**,
-**Clips**, **Connections**, and **Settings** in the side navigation. Move left from the edge of a page to open navigation, choose a
+**Clips** and **Settings** in the side navigation. Move left from the edge of a page to open navigation, choose a
 destination, and press the remote's center button to enter it. Back closes the
 nearest dialog or returns to the previous screen.
 
@@ -139,8 +140,8 @@ For an optional way to watch one live camera, hold **OK** on its tile and choose
 for that viewing session. This needs Frigate 0.18.2 or a compatible later
 stable 0.18 release and a supported secure or trusted-local connection.
 
-In **Settings** > **Cameras and Playback**, you can enable **Try another
-connection automatically** for your saved server. It starts off. When a
+Open **Settings** > **Cameras & playback** > **Troubleshoot playback** to turn on
+**Try another connection automatically** for your saved server. It starts off. When a
 camera leaves out required video setup details, Opah can try the same stream
 another way before using a smaller stream. A working smaller stream can stay
 in use. See [live connection choices](docs/compatibility.md#another-live-connection)
@@ -209,8 +210,8 @@ Optional features help you keep up with activity:
   TV app is open. You choose the cameras, kinds of activity, quiet times, and
   how much detail a notification may show.
 - **Home Assistant** can send text messages from your automations to this TV.
-  Open **Connections** > **Home Assistant**, sign in, allow TV pop-ups, and turn
-  **Receive notifications** on. Message details start hidden. The TV must be on
+  Sign in under **Settings** > **Connections** > **Home Assistant**. Open
+  **Message settings** and turn on **Receive notifications**. Message details start hidden. The TV must be on
   and connected to receive messages. See the [setup guide](docs/home-assistant.md).
 - **Monitor** on Cameras watches several cameras and can bring one active
   camera forward when something important happens. You can also start it from
@@ -225,7 +226,7 @@ actions, destructive actions, and private cameras. For the strongest
 protection, also use a restricted Frigate account for the TV.
 
 Frigate pop-ups normally leave remote control with the app you are watching.
-To act on a pop-up, turn on **Settings** > **TV alerts** > **Preview** >
+To act on a pop-up, turn on **Settings** > **Notifications** > **Frigate alerts** > **Customize Frigate alerts** > **Preview** >
 **Interactive Frigate alerts**. Remote control moves temporarily to the alert.
 Press down to choose **Watch recording**, **Live camera**, or **Snooze 15 min**
 when available. Snooze pauses alerts from that camera. Back closes the pop-up
@@ -241,10 +242,10 @@ limit and keeps its picture, when available, if video cannot play. The alert's
 privacy setting must allow full pictures. Previews also require current camera access and stay off in guest
 mode or when the recording needs a PIN unlock.
 
-Home Assistant also supports optional pictures and up to three callback buttons.
-Both start off, and message details must be enabled. Buttons require the
-**Home Assistant actions** PIN lock; pictures follow Opah's camera and preview
-privacy rules. See the [Home Assistant guide](docs/home-assistant.md) for setup,
+Home Assistant also supports optional pictures and up to three automation buttons.
+Both start off and need message details enabled. The **Require PIN for Home Assistant buttons**
+switch asks for a PIN on every press. With the switch off, Home Assistant can still require a PIN
+for individual buttons. Pictures follow Opah's privacy rules. See the [Home Assistant guide](docs/home-assistant.md) for setup,
 supported attachments, examples, and action limits.
 
 ## Save important recordings
@@ -271,21 +272,21 @@ focus, and saved positions.
 While watching a camera or Birdseye, use the screen-size control to choose
 whether the whole picture fits on the television or fills the screen. Opah
 remembers that choice for each camera and for Birdseye on the device. If an
-audio track prevents playback, try **Settings** > **Cameras and Playback** >
-**Check camera compatibility** and choose a video-only option.
+audio track prevents playback, open **Settings** > **Cameras & playback** >
+**Troubleshoot playback**, then choose **Check camera compatibility** and try
+a video-only option.
 
 ## Adjust appearance and settings
 
 Settings keeps its categories on the left and the selected page on the right.
-Press right or the center button on a category to open it. Server information,
-storage, appearance, and device details have their own layouts and scroll when
-more information is available.
+Press right or the center button on a category to open it. In **Cameras & playback**,
+use **Open Opah to** to choose what you see at startup. The same page has live
+video quality and sound options. To mark recordings reviewed after watching them,
+open **Activity** > **Options**.
 
-Open **Settings** > **Appearance** to choose **System**, **Dark**, **Light**, or
-**Custom**. Custom mode lets you adjust the accent and background while seeing
-a preview. **High contrast**, **Reduce motion**, and **Reduce transparency**
-offer simpler, more readable presentation. Rounded corners are part of the
-design; **Extra rounding** is an optional softer treatment.
+Open **Settings** > **Appearance** to choose **System**, **Dark**, or **Light**.
+**High contrast**, **Reduce motion**, and **Reduce transparency** are on the
+same page. Open **Customize theme** to pick a palette or adjust its colors.
 
 Updating Opah keeps your saved appearance and startup choices.
 
@@ -293,8 +294,8 @@ Updating Opah keeps your saved appearance and startup choices.
 
 Opah normally checks the official GitHub release page shortly after it starts.
 A small dot inside the Settings gear means an update is available. Open
-**Settings** > **Update** to read the release notes, download the verified APK,
-and open Android's installer. You can turn automatic checks off on the same
+**Settings** > **About & updates** to read the release notes, download the
+verified APK, and open Android's installer. You can turn automatic checks off on the same
 page. Opah never downloads or installs an update without your action.
 
 ## Optional camera shortcuts

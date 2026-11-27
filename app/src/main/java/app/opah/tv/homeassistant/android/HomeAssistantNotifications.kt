@@ -35,6 +35,7 @@ internal enum class HomeAssistantActionResult(val message: String) {
     UNCERTAIN("Request may have been sent — check Home Assistant"),
     UNAVAILABLE("This Home Assistant action is no longer available"),
     NEEDS_PIN("Enter the Opah PIN to send this request"),
+    PIN_REJECTED("The PIN did not work"),
 }
 
 internal class HomeAssistantNotifications(
@@ -49,6 +50,7 @@ internal class HomeAssistantNotifications(
     private val openAction: (String) -> Unit = { HomeAssistantActionIntents.open(context, it, overlay = true) },
     private val disclosure: () -> HomeAssistantDisclosure,
     private val pause: app.opah.tv.notifications.NotificationPauseGate = app.opah.tv.notifications.NotificationPauseGate.NONE,
+    private val verifyActionPin: suspend (CharArray) -> Long? = { null },
 ) : HomeAssistantNotificationSink {
     private val context = context.applicationContext
     private val notifications = NotificationManagerCompat.from(this.context)
@@ -96,8 +98,9 @@ internal class HomeAssistantNotifications(
             val expires = Runnable { synchronized(lock) { book.remove(entry.id)?.let { release(it) } } }
             resources[entry.id] = Resources(expires, admission.revision)
             handler.postDelayed(expires, (entry.expiresAt - now()).coerceAtLeast(0))
-            val buttons = if (bound && notice.details && session.allowActions && connected() && policy.actionsProtected) {
-                entry.message.actions.mapIndexed { index, action ->
+            val buttons = if (bound && notice.details && session.allowActions && connected()) {
+                entry.message.actions.mapIndexedNotNull { index, action ->
+                    if (!policy.canOfferAction(action)) return@mapIndexedNotNull null
                     val ticket = entry.ticket(index)
                     TvAlertOverlayButton(ACTION_KINDS[index], action.title, ticket) {
                         synchronized(lock) {
@@ -142,7 +145,9 @@ internal class HomeAssistantNotifications(
         if (bitmap == null) builder.setStyle(NotificationCompat.BigTextStyle().bigText(notice.body)) else {
             builder.setLargeIcon(bitmap).setStyle(NotificationCompat.BigPictureStyle().bigPicture(bitmap).setSummaryText(notice.body))
         }
-        buttons.forEachIndexed { index, button -> builder.addAction(0, button.label, HomeAssistantActionIntents.pending(context, entry.ticket(index))) }
+        buttons.forEach { button ->
+            builder.addAction(0, button.label, HomeAssistantActionIntents.pending(context, button.binding))
+        }
         val revision = resources[entry.id]?.presentationRevision ?: return
         if (pause.withPermit(revision) { notifications.notify(entry.key, NOTIFICATION_ID, builder.build()); true } != true) return
         overlays.showHomeAssistant(session.server, entry.message.tag, AndroidNotificationIdentity(entry.key, NOTIFICATION_ID),
@@ -151,20 +156,26 @@ internal class HomeAssistantNotifications(
                 val current = richPolicy()
                 valid(entry, expected, notice.details) && (bitmap == null || imagePolicy != null && current.images == imagePolicy.images &&
                     current.imageAuthority == imagePolicy.imageAuthority) &&
-                    (buttons.isEmpty() || richPolicy().actionsProtected && session(session.server)?.allowActions == true && connected())
+                    buttons.all { actionStatus(it.binding) != HomeAssistantActionResult.UNAVAILABLE }
             }
         }
     }
 
-    fun actionStatus(ticket: String): HomeAssistantActionResult = synchronized(lock) {
+    fun actionStatus(ticket: String): HomeAssistantActionResult = synchronized(lock) { actionStatusLocked(ticket) }
+
+    private fun actionStatusLocked(ticket: String, verifiedEpoch: Long? = null): HomeAssistantActionResult {
         val session = runCatching { store.read() }.getOrNull() ?: return HomeAssistantActionResult.UNAVAILABLE
         val policy = richPolicy()
         if (!session.enabled || !session.showDetails || !session.allowActions || !connected() ||
-            disclosure() != HomeAssistantDisclosure.DETAILS || !policy.actionsProtected || !canPost()) return HomeAssistantActionResult.UNAVAILABLE
-        val (entry, _) = book.action(ticket, now(), homeAssistantRegistrationKey(session), policy.epoch) ?: return HomeAssistantActionResult.UNAVAILABLE
+            disclosure() != HomeAssistantDisclosure.DETAILS || !canPost()) return HomeAssistantActionResult.UNAVAILABLE
+        val (entry, action) = book.action(ticket, now(), homeAssistantRegistrationKey(session), policy.epoch)
+            ?: return HomeAssistantActionResult.UNAVAILABLE
+        if (!policy.canOfferAction(action)) return HomeAssistantActionResult.UNAVAILABLE
         if (!pause.snapshot().permits(resources[entry.id]?.presentationRevision ?: -1)) return HomeAssistantActionResult.UNAVAILABLE
         if (pending[entry.key] != entry.id) return HomeAssistantActionResult.UNAVAILABLE
-        if (!policy.actionsUnlocked) HomeAssistantActionResult.NEEDS_PIN else HomeAssistantActionResult.READY
+        return if (policy.requiresPin(action) && verifiedEpoch != policy.epoch) {
+            HomeAssistantActionResult.NEEDS_PIN
+        } else HomeAssistantActionResult.READY
     }
 
     fun actionTitle(ticket: String): String? = synchronized(lock) {
@@ -174,9 +185,28 @@ internal class HomeAssistantNotifications(
     }
 
     /** Consume before submission; no queue, automatic retry, or implied automation confirmation. */
-    suspend fun executeAction(ticket: String): HomeAssistantActionResult {
+    suspend fun executeAction(ticket: String, pin: CharArray? = null): HomeAssistantActionResult {
+        val verifiedEpoch = try {
+            val expectedEpoch = synchronized(lock) {
+                when (val status = actionStatusLocked(ticket)) {
+                    HomeAssistantActionResult.READY -> null
+                    HomeAssistantActionResult.NEEDS_PIN -> {
+                        if (pin == null) return status
+                        richPolicy().epoch
+                    }
+                    else -> return status
+                }
+            }
+            if (expectedEpoch == null) null else {
+                val verified = verifyActionPin(requireNotNull(pin)) ?: return HomeAssistantActionResult.PIN_REJECTED
+                if (verified != expectedEpoch) return HomeAssistantActionResult.UNAVAILABLE
+                verified
+            }
+        } finally {
+            pin?.fill('\u0000')
+        }
         val prepared = synchronized(lock) {
-            val admission = actionStatus(ticket)
+            val admission = actionStatusLocked(ticket, verifiedEpoch)
             if (admission != HomeAssistantActionResult.READY) return admission
             val session = runCatching { store.read() }.getOrNull() ?: return HomeAssistantActionResult.UNAVAILABLE
             val (entry, action) = book.action(ticket, now(), homeAssistantRegistrationKey(session), richPolicy().epoch) ?: return HomeAssistantActionResult.UNAVAILABLE

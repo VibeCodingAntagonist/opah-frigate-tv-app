@@ -20,8 +20,11 @@ you can do to keep the connections safe.
 - A local PIN can protect selected app areas, actions, and private cameras on a
   shared TV. It adds protection on the TV but does not replace Frigate account
   permissions.
-- **Connections** uses the same PIN protection as Settings, including before a
-  Frigate server is connected.
+- **Settings** > **Connections** uses the Settings PIN protection, including before a
+  Frigate server is connected. The first Home Assistant sign-in is available
+  with Settings locked. Guest Mode and unavailable privacy or credential
+  storage still block setup, and managing an existing connection follows the
+  Settings lock.
 
 ## Information kept on the TV
 
@@ -73,7 +76,7 @@ excluded from backups and device transfers.
 Opah connects directly to your Home Assistant server to receive messages. It
 does not use an Opah notification relay, send location updates, or copy Frigate
 credentials into Home Assistant. Signing out of Frigate does not disconnect
-Home Assistant; manage each connection in **Connections**.
+Home Assistant; manage each connection in **Settings** > **Connections**.
 
 Message details start hidden. Enabling **Show message details** allows titles
 and text on the TV, subject to Opah's notification privacy settings. Guest mode
@@ -87,9 +90,13 @@ mode, restricted camera access, private cameras, protected media areas, and
 recognition restrictions suppress unclassified pictures. A message's camera
 label cannot bypass those checks.
 
-Automation buttons require a separate opt-in, the dedicated **Home Assistant
-actions** PIN lock, and current PIN authorization. Only an explicit choice can
-send a callback. Each button is bound to its originating registration and an
+Automation buttons require a separate opt-in. The **Require PIN for Home
+Assistant buttons** setting protects every button. With it off, Home
+Assistant can request a PIN for an individual button. When there is no local
+PIN, buttons that require one are unavailable. Guest Mode disables automation
+buttons. Verifying a PIN from the request screen authorizes that request without
+unlocking other protected areas. Only an explicit confirmation can send a
+callback. Each button is bound to its originating registration and an
 in-memory, expiring ticket. Replacement, clearing, disconnection, or privacy
 revocation invalidates it. A notification can submit only one callback,
 including when the network result is uncertain. Opah never automatically

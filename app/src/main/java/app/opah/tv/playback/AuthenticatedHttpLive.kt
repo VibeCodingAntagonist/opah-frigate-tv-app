@@ -8,6 +8,7 @@ import app.opah.tv.data.model.CodecCapability
 import app.opah.tv.data.model.LiveStreamOption
 import app.opah.tv.data.model.StreamPreference
 import app.opah.tv.domain.StreamSelectionService
+import okhttp3.CookieJar
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
@@ -27,12 +28,18 @@ internal class AuthenticatedHttpLive(
     isAuthorized: () -> Boolean,
     refreshAuthorization: suspend () -> Boolean = { isAuthorized() },
     val localTransport: LocalHttpLiveTransport? = null,
+    val withoutSignIn: Boolean = false,
 ) {
     private val authorizationCheck = isAuthorized
     private val refreshCheck = refreshAuthorization
     private val closed = java.util.concurrent.atomic.AtomicBoolean()
     val isAuthorized: () -> Boolean = { !closed.get() && authorizationCheck() }
     val refreshAuthorization: suspend () -> Boolean = { !closed.get() && refreshCheck() && !closed.get() }
+    fun clientFor(authenticatedClient: OkHttpClient): OkHttpClient = when {
+        localTransport != null -> localTransport.client
+        withoutSignIn -> authenticatedClient.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+        else -> authenticatedClient
+    }
     fun close() { closed.set(true); localTransport?.close() }
     override fun toString(): String = "AuthenticatedHttpLive([redacted])"
 }
@@ -56,17 +63,19 @@ internal fun httpLiveUri(baseUrl: String, streamName: String): String? {
 internal fun canOfferHttpsLive(baseUrl: String?): Boolean =
     baseUrl?.startsWith("https://", ignoreCase = true) == true && httpLiveUri(baseUrl, "probe") != null
 
-internal fun canOfferHttpLive(baseUrl: String?): Boolean =
-    baseUrl != null && httpLiveUri(baseUrl, "probe") != null
+internal fun canOfferHttpLive(baseUrl: String?, withoutSignIn: Boolean): Boolean {
+    val uri = baseUrl?.let { httpLiveUri(it, "probe") } ?: return false
+    return withoutSignIn || uri.startsWith("https://")
+}
 
 /** Use the same canonical parser as the request, never a legacy profile-port heuristic. */
 internal fun isLocalHttpLiveBase(baseUrl: String?): Boolean =
     baseUrl != null && httpLiveUri(baseUrl, "probe")?.startsWith("http://") == true
 
-internal fun useAuthenticatedLive(request: PlaybackRequest, baseUrl: String?): Boolean =
+internal fun useAuthenticatedLive(request: PlaybackRequest, baseUrl: String?, withoutSignIn: Boolean = false): Boolean =
     request.kind == PlaybackKind.LIVE && !request.compatibilityTest &&
         request.httpsLiveRequestId != null && request.liveCompatibilityRequestId == null &&
-        canOfferHttpLive(baseUrl)
+        canOfferHttpLive(baseUrl, withoutSignIn)
 
 /**
  * Only select from this camera's current eligible discovery. A connection change supplies

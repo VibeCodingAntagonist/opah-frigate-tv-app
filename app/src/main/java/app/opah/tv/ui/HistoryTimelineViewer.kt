@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -73,6 +74,7 @@ import app.opah.tv.data.model.ReviewItem
 import app.opah.tv.data.model.ReviewSeverity
 import app.opah.tv.playback.PlaybackRequest
 import app.opah.tv.playback.RecordedPlayerFactory
+import app.opah.tv.ui.views.NativePlaybackScreenAwake
 import kotlinx.coroutines.delay
 
 @androidx.annotation.OptIn(UnstableApi::class)
@@ -90,6 +92,7 @@ internal fun HistoryTimelineViewer(
     onFindMotion: ((Double) -> Unit)?,
     externalFocusRequester: FocusRequester? = null,
     exitFocusRequester: FocusRequester? = null,
+    recordedPlayerFactory: ((android.content.Context) -> ExoPlayer)? = null,
 ) {
     val rangeStart = request?.recordingStartTime ?: history.hourStartSeconds ?: return
     val rangeEnd = request?.recordingEndTime ?: (rangeStart + HISTORY_HOUR_SECONDS)
@@ -106,6 +109,7 @@ internal fun HistoryTimelineViewer(
     var timelineFocused by remember { mutableStateOf(false) }
     var player by remember(request?.uri) { mutableStateOf<ExoPlayer?>(null) }
     var playbackError by remember(request?.uri) { mutableStateOf<String?>(null) }
+    var screenAwake by remember(request?.uri) { mutableStateOf<NativePlaybackScreenAwake?>(null) }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val semanticColors = LocalOpahSemanticColors.current
@@ -142,11 +146,11 @@ internal fun HistoryTimelineViewer(
     if (!BuildConfig.DOCUMENTATION_MODE && request != null) {
         DisposableEffect(request.uri, lifecycleOwner) {
             val application = context.applicationContext as OpahApplication
-            val activePlayer = RecordedPlayerFactory.create(
+            val activePlayer = (recordedPlayerFactory?.invoke(context) ?: RecordedPlayerFactory.create(
                 context,
                 application.container.httpClient,
                 preferSoftwareVideoDecoder = false,
-            ).apply {
+            )).apply {
                 setMediaItem(
                     MediaItem.Builder()
                         .setUri(request.uri)
@@ -217,7 +221,10 @@ internal fun HistoryTimelineViewer(
                     refreshBitmap = { refreshBitmap(cameraName, 540) },
                     modifier = Modifier.fillMaxSize(),
                 )
-            } else if (player != null) {
+            } else if (player != null && request != null) {
+                val awake = rememberPlaybackAwakeHost(request.uri)
+                SideEffect { screenAwake = awake }
+                PlaybackAwakeStream(awake, player)
                 AndroidView(
                     factory = { viewContext ->
                         PlayerView(viewContext).apply {
@@ -226,7 +233,6 @@ internal fun HistoryTimelineViewer(
                                 ViewGroup.LayoutParams.MATCH_PARENT,
                             )
                             useController = false
-                            keepScreenOn = true
                             resizeMode = videoResizeMode(stretched = false)
                             this.player = player
                         }
@@ -288,7 +294,14 @@ internal fun HistoryTimelineViewer(
                             true
                         }
                         event.type == KeyEventType.KeyUp && event.key == Key.DirectionCenter -> {
-                            player?.let { if (it.isPlaying) it.pause() else it.play() }
+                            player?.let {
+                                if (it.isPlaying) {
+                                    it.pause()
+                                } else {
+                                    screenAwake?.explicitAction()
+                                    it.play()
+                                }
+                            }
                             true
                         }
                         event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> {

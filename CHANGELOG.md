@@ -2,6 +2,24 @@
 
 This page lists the user-visible changes in each Opah release.
 
+## 0.7.4
+
+- Find Connections and Notifications together in **Settings**. **Check setup**
+  shows which saved connections need attention and how to fix them.
+- Find startup and live video choices in **Cameras & playback**, PIN and camera
+  locks in **Privacy**, and version and update controls in **About & updates**.
+- Keep Birdseye controls hidden while the live video briefly buffers.
+- Keep the screen awake while a camera, saved view, or recording is playing.
+  Monitor continues to follow its **Allow sleep** or **Stay awake** choice.
+- Choose whether every Home Assistant button needs an Opah PIN. With the
+  switch off, a button asks for a PIN only when Home Assistant requests one.
+- Connect Home Assistant for the first time without an Opah PIN. Guest Mode
+  still blocks setup and automation buttons.
+
+The TV can still go into standby under its own power settings. Thanks to
+[jenishngl](https://github.com/jenishngl) for reporting the camera viewing
+problem in [issue #23](https://github.com/VibeCodingAntagonist/opah-frigate-tv-app/issues/23).
+
 ## 0.7.3
 
 - Use **Play using another connection** with a supported secure Frigate

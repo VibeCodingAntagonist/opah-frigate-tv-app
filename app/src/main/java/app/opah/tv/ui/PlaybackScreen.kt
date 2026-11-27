@@ -274,6 +274,7 @@ fun PlaybackScreen(
     nextActivityLabel: String? = null,
     nextActivityEnabled: Boolean = false,
     onNextActivity: (() -> Unit)? = null,
+    recordedPlayerFactory: ((android.content.Context, Boolean) -> ExoPlayer)? = null,
 ) {
     if (BuildConfig.DOCUMENTATION_MODE && request.uri.startsWith(DOCUMENTATION_URI_PREFIX)) {
         DocumentationPlaybackScreen(
@@ -380,6 +381,7 @@ fun PlaybackScreen(
                 preferSoftwareVideoDecoder = softwareDecoderActive,
                 recordedPositionMs = recordedPositionMs,
                 playWhenReady = resumeWhenStarted,
+                recordedPlayerFactory = recordedPlayerFactory,
             )
         }
 
@@ -887,6 +889,8 @@ fun PlaybackScreen(
             .focusRequester(hiddenControlsFocusRequester)
             .focusable(enabled = !controlsVisible),
     ) {
+        val screenAwake = if (request.compatibilityTest) null else rememberPlaybackAwakeHost(playbackStateKey)
+        PlaybackAwakeStream(screenAwake, session?.player)
         if (compatibilityLive) {
             key(playbackStateKey) {
                 AndroidView(
@@ -897,7 +901,6 @@ fun PlaybackScreen(
                                 ViewGroup.LayoutParams.MATCH_PARENT,
                             )
                             useController = false
-                            keepScreenOn = true
                             resizeMode = videoResizeMode(stretchVideo)
                             playerView = this
                         }
@@ -919,7 +922,6 @@ fun PlaybackScreen(
                                 ViewGroup.LayoutParams.MATCH_PARENT,
                             )
                             useController = false
-                            keepScreenOn = true
                             resizeMode = videoResizeMode(stretchVideo)
                             player = activeSession.player
                             playerView = this
@@ -1070,6 +1072,7 @@ fun PlaybackScreen(
                         telemetry = telemetry,
                         player = activeSession.player,
                         onRetry = {
+                            screenAwake?.explicitAction()
                             pendingAutomaticRetryMs = null
                             automaticRetryAttempts = 0
                             if (request.kind == PlaybackKind.RECORDED) {
@@ -1111,6 +1114,12 @@ fun PlaybackScreen(
                         onPictureInPicture = openPictureInPicture,
                         onToggleDiagnostics = { diagnosticsVisible = !diagnosticsVisible },
                         playFocusRequester = playButtonFocusRequester,
+                        onPlaybackStateChanged = { playing ->
+                            if (playing) {
+                                screenAwake?.explicitAction()
+                                screenAwake?.refresh()
+                            }
+                        },
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .widthIn(max = 1120.dp)
@@ -1513,6 +1522,7 @@ private fun createPlayerSession(
     preferSoftwareVideoDecoder: Boolean,
     recordedPositionMs: Long,
     playWhenReady: Boolean,
+    recordedPlayerFactory: ((android.content.Context, Boolean) -> ExoPlayer)?,
 ): PlayerSession {
     val startedAt = SystemClock.elapsedRealtime()
     return when (request.kind) {
@@ -1530,7 +1540,7 @@ private fun createPlayerSession(
         }
 
         PlaybackKind.RECORDED -> {
-            val player = RecordedPlayerFactory.create(
+            val player = recordedPlayerFactory?.invoke(context, preferSoftwareVideoDecoder) ?: RecordedPlayerFactory.create(
                 context,
                 application.container.httpClient,
                 preferSoftwareVideoDecoder,

@@ -75,6 +75,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -161,6 +162,7 @@ internal fun aboutOpahText(versionName: String, connectedServerVersion: String?)
     appendLine(OPAH_PRIVACY_NOTICE)
     appendLine()
     append(OPAH_INDEPENDENCE_NOTICE)
+    append(" Opah is not affiliated with, sponsored by, or endorsed by the Home Assistant project or the Open Home Foundation.")
     append(' ')
     appendLine(OPAH_TRADEMARK_NOTICE)
     appendLine()
@@ -285,16 +287,17 @@ internal fun StartupRecoveryScreen(
 internal fun ConnectionSetupScreen(
     state: Phase0UiState,
     onDismissError: () -> Unit,
-    onTestConnection: (String, String, String, String, String) -> Unit,
-    onConnect: (String, String, String, String, String) -> Unit,
+    onTestConnection: (String, String, String, String, String, Boolean) -> Unit,
+    onConnect: (String, String, String, String, String, Boolean) -> Unit,
     onForget: () -> Unit,
     onExitRequested: () -> Unit,
 ) {
     val saved = state.savedProfile
     val savedUsername = saved?.username?.takeUnless {
-        saved.usesUnauthenticatedFrigatePort
+        saved.withoutSignIn
     }.orEmpty()
     var serverUrl by rememberSaveable { mutableStateOf(saved?.apiBaseUrl.orEmpty()) }
+    var useNoSignIn by rememberSaveable { mutableStateOf(saved?.withoutSignIn == true) }
     var username by rememberSaveable { mutableStateOf(savedUsername) }
     var password by remember { mutableStateOf("") }
     var advanced by rememberSaveable {
@@ -303,14 +306,17 @@ internal fun ConnectionSetupScreen(
     var rtspHost by rememberSaveable { mutableStateOf(saved?.rtspHostOverride.orEmpty()) }
     var rtspPort by rememberSaveable { mutableStateOf((saved?.rtspPort ?: 8554).toString()) }
     var showExitConfirmation by rememberSaveable { mutableStateOf(false) }
-    val unauthenticatedPort = ConnectionProfileFactory.targetsUnauthenticatedFrigatePort(serverUrl)
+    val isInternalPort = ConnectionProfileFactory.targetsDefaultInternalPort(serverUrl)
+    val withoutSignIn = isInternalPort || useNoSignIn
     val lifecycleOwner = LocalLifecycleOwner.current
     val keepEditingFocusRequester = remember { FocusRequester() }
     val inputFocusCoordinator = remember { TvInputFocusCoordinator() }
     val testConnectionFocusRequester = remember { FocusRequester() }
+    val accessChoiceFocusRequester = remember { FocusRequester() }
     val hasDraft = password.isNotEmpty() ||
         serverUrl != saved?.apiBaseUrl.orEmpty() ||
         username != savedUsername ||
+        withoutSignIn != (saved?.withoutSignIn == true) ||
         rtspHost != saved?.rtspHostOverride.orEmpty() ||
         rtspPort != (saved?.rtspPort ?: 8554).toString()
 
@@ -337,7 +343,8 @@ internal fun ConnectionSetupScreen(
     LaunchedEffect(saved) {
         saved ?: return@LaunchedEffect
         serverUrl = saved.apiBaseUrl
-        username = saved.username.takeUnless { saved.usesUnauthenticatedFrigatePort }.orEmpty()
+        useNoSignIn = saved.withoutSignIn
+        username = saved.username.takeUnless { saved.withoutSignIn }.orEmpty()
         rtspHost = saved.rtspHostOverride.orEmpty()
         rtspPort = saved.rtspPort.toString()
     }
@@ -397,59 +404,78 @@ internal fun ConnectionSetupScreen(
                 ProductionTvInput(
                     label = "Frigate address",
                     value = serverUrl,
-                    onValueChange = { serverUrl = it },
+                    onValueChange = {
+                        serverUrl = it
+                        useNoSignIn = false
+                        if (ConnectionProfileFactory.targetsDefaultInternalPort(it)) password = ""
+                    },
                     placeholder = "https://frigate.example:8971",
                     enabled = !state.loading,
                     keyboardType = KeyboardType.Uri,
                     requestInitialFocus = true,
                     inputKey = SETUP_ADDRESS_INPUT,
                     focusCoordinator = inputFocusCoordinator,
-                    nextInputKey = SETUP_USERNAME_INPUT.takeUnless { unauthenticatedPort },
-                    nextFocusRequester = testConnectionFocusRequester.takeIf { unauthenticatedPort },
+                    nextFocusRequester = if (isInternalPort) testConnectionFocusRequester else accessChoiceFocusRequester,
                 )
             }
-            if (unauthenticatedPort) {
+            if (!isInternalPort) {
+                item {
+                    Button(
+                        onClick = {
+                            useNoSignIn = !useNoSignIn
+                            if (useNoSignIn) password = ""
+                        },
+                        enabled = !state.loading,
+                        modifier = Modifier.focusRequester(accessChoiceFocusRequester),
+                    ) {
+                        Text(stringResource(if (useNoSignIn) R.string.frigate_connect_without_sign_in_on
+                            else R.string.frigate_connect_without_sign_in_off))
+                    }
+                }
+            }
+            if (withoutSignIn) {
                 item {
                     ScreenMessage(
-                        message = "Port 5000 connects without an account and gives this TV full Frigate access • use it only on a trusted private network",
+                        message = stringResource(R.string.frigate_without_sign_in_warning),
                         isError = false,
                     )
                 }
-            }
-            item {
-                ProductionTvInput(
-                    label = "Username • not used on port 5000",
-                    value = username,
-                    onValueChange = { username = it },
-                    placeholder = "Frigate user",
-                    enabled = !state.loading && !unauthenticatedPort,
-                    inputKey = SETUP_USERNAME_INPUT,
-                    focusCoordinator = inputFocusCoordinator,
-                    previousInputKey = SETUP_ADDRESS_INPUT,
-                    nextInputKey = SETUP_PASSWORD_INPUT,
-                )
-            }
-            item {
-                ProductionTvInput(
-                    label = "Password • not used on port 5000",
-                    value = password,
-                    onValueChange = { password = it },
-                    placeholder = "Saved securely after Connect",
-                    enabled = !state.loading && !unauthenticatedPort,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardType = KeyboardType.Password,
-                    imeAction = if (advanced) ImeAction.Next else ImeAction.Done,
-                    inputKey = SETUP_PASSWORD_INPUT,
-                    focusCoordinator = inputFocusCoordinator,
-                    previousInputKey = SETUP_USERNAME_INPUT,
-                    nextInputKey = if (advanced) SETUP_RTSP_HOST_INPUT else null,
-                    nextFocusRequester = if (advanced) null else testConnectionFocusRequester,
-                )
+            } else {
+                item {
+                    ProductionTvInput(
+                        label = "Username",
+                        value = username,
+                        onValueChange = { username = it },
+                        placeholder = "Frigate user",
+                        enabled = !state.loading,
+                        inputKey = SETUP_USERNAME_INPUT,
+                        focusCoordinator = inputFocusCoordinator,
+                        previousInputKey = SETUP_ADDRESS_INPUT,
+                        nextInputKey = SETUP_PASSWORD_INPUT,
+                    )
+                }
+                item {
+                    ProductionTvInput(
+                        label = "Password",
+                        value = password,
+                        onValueChange = { password = it },
+                        placeholder = "Saved securely after Connect",
+                        enabled = !state.loading,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardType = KeyboardType.Password,
+                        imeAction = if (advanced) ImeAction.Next else ImeAction.Done,
+                        inputKey = SETUP_PASSWORD_INPUT,
+                        focusCoordinator = inputFocusCoordinator,
+                        previousInputKey = SETUP_USERNAME_INPUT,
+                        nextInputKey = if (advanced) SETUP_RTSP_HOST_INPUT else null,
+                        nextFocusRequester = if (advanced) null else testConnectionFocusRequester,
+                    )
+                }
             }
             if (serverUrl.trim().startsWith("http://", ignoreCase = true)) {
                 item {
                     ScreenMessage(
-                        message = "HTTP exposes the Frigate session on the local network. HTTPS is recommended.",
+                        message = "HTTP is unencrypted • use HTTPS when available",
                         isError = false,
                     )
                 }
@@ -469,7 +495,7 @@ internal fun ConnectionSetupScreen(
                         enabled = !state.loading,
                         inputKey = SETUP_RTSP_HOST_INPUT,
                         focusCoordinator = inputFocusCoordinator,
-                        previousInputKey = SETUP_PASSWORD_INPUT,
+                        previousInputKey = if (withoutSignIn) SETUP_ADDRESS_INPUT else SETUP_PASSWORD_INPUT,
                         nextInputKey = SETUP_RTSP_PORT_INPUT,
                     )
                 }
@@ -492,12 +518,12 @@ internal fun ConnectionSetupScreen(
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     Button(
-                        onClick = { onTestConnection(serverUrl, username, password, rtspHost, rtspPort) },
+                        onClick = { onTestConnection(serverUrl, username, password, rtspHost, rtspPort, withoutSignIn) },
                         enabled = !state.loading,
                         modifier = Modifier.focusRequester(testConnectionFocusRequester),
                     ) { Text("Test connection") }
                     Button(
-                        onClick = { onConnect(serverUrl, username, password, rtspHost, rtspPort) },
+                        onClick = { onConnect(serverUrl, username, password, rtspHost, rtspPort, withoutSignIn) },
                         enabled = !state.loading,
                     ) { Text("Connect") }
                     if (saved != null) {

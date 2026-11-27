@@ -53,7 +53,7 @@ class FrigateSessionManager(
         }
         profileStore.save(profile)
         withContext(ioDispatcher) {
-            if (rememberCredential && !profile.usesUnauthenticatedFrigatePort) {
+            if (rememberCredential && !profile.withoutSignIn) {
                 credentialStore.writePassword(password)
             } else {
                 credentialStore.clearPassword()
@@ -63,7 +63,7 @@ class FrigateSessionManager(
     }
 
     suspend fun restore(profile: ConnectionProfile): FrigateUserProfile {
-        if (profile.usesUnauthenticatedFrigatePort) {
+        if (profile.withoutSignIn) {
             return gateway.login(profile, "")
         }
         if (cookieStore.hasUnexpiredSession()) {

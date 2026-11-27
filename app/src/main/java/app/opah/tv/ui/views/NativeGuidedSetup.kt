@@ -3,6 +3,7 @@ package app.opah.tv.ui.views
 import android.annotation.SuppressLint
 import android.content.res.ColorStateList
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
@@ -39,11 +40,19 @@ internal class NativeGuidedSetup(
     private val activity: ComponentActivity,
     private val actions: GuidedSetupActions,
     private val store: GuidedSetupStore = GuidedSetupStore(activity),
+    private val checkOnly: Boolean = false,
+    resumeOnOpen: Boolean = false,
+    private val repairConnection: (SetupServices) -> Unit = {},
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private var progress = store.read()
     private var status = actions.status()
-    private var intro = progress.services != null || status.frigateSaved || status.haSaved
+    private var progress = if (checkOnly) SetupProgress(services = when {
+        status.frigateSaved && status.haSaved -> SetupServices.BOTH
+        status.frigateSaved -> SetupServices.FRIGATE
+        status.haSaved -> SetupServices.HOME_ASSISTANT
+        else -> null
+    }, step = SetupStep.CHECKS) else store.read().let { if (resumeOnOpen && it.completed) SetupProgress() else it }
+    private var intro = !checkOnly && !resumeOnOpen && (progress.services != null || status.frigateSaved || status.haSaved)
     private var closed = false
     private var working = false
     private var operation: Job? = null
@@ -59,7 +68,28 @@ internal class NativeGuidedSetup(
     private var checkEpoch = status.privacyEpoch
     private val labels = linkedMapOf<String, TextView>()
     private val buttons = linkedMapOf<String, Button>()
-    private val root = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+    private val root = object : LinearLayout(activity) {
+        init { orientation = VERTICAL }
+
+        override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+            val direction = when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP -> -1
+                KeyEvent.KEYCODE_DPAD_DOWN -> 1
+                else -> 0
+            }
+            if (!intro && progress.step == SetupStep.CHECKS && direction != 0) {
+                val visibleButtons = (buttons.values + next).filter { it.isShown && it.isEnabled }
+                val focusedIndex = visibleButtons.indexOf(findFocus())
+                if (focusedIndex >= 0) {
+                    if (event.action == KeyEvent.ACTION_DOWN) {
+                        visibleButtons.getOrNull(focusedIndex + direction)?.requestFocus()
+                    }
+                    return true
+                }
+            }
+            return super.dispatchKeyEvent(event)
+        }
+    }
     val view: View get() = root
     private val heading = label("", 21f)
     private val position = label("", 12f).apply { tag = "setup:position" }
@@ -73,10 +103,10 @@ internal class NativeGuidedSetup(
     }
 
     init {
-        root.addView(heading); root.addView(position)
+        if (!checkOnly) { root.addView(heading); root.addView(position) }
         root.addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(feedback)
-        root.addView(LinearLayout(activity).apply {
+        if (!checkOnly) root.addView(LinearLayout(activity).apply {
             gravity = Gravity.CENTER_VERTICAL
             for (control in listOf(back, later, next)) addView(control, LinearLayout.LayoutParams(0, activity.dp(42), 1f))
         })
@@ -86,7 +116,10 @@ internal class NativeGuidedSetup(
             override fun onViewDetachedFromWindow(v: View) = close()
         })
         activity.lifecycle.addObserver(lifecycle)
-        render()
+        if (checkOnly) {
+            renderSavedChecks()
+            root.post { if (!closed && root.isAttachedToWindow && progress.services != null) runChecks() }
+        } else render()
         scope.launch {
             while (isActive) {
                 if (activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) refresh()
@@ -101,7 +134,11 @@ internal class NativeGuidedSetup(
     }
     fun handleBack(): Boolean {
         if (closed) return false
-        if (intro || progress.step == SetupStep.CHOOSE) { actions.finish(progress, false); return true }
+        if (checkOnly || intro || progress.step == SetupStep.CHOOSE) {
+            cancelOperation()
+            actions.finish(progress, false)
+            return true
+        }
         cancelOperation(); currentForm()?.hide()
         progress = progress.back(); save(); render()
         return true
@@ -239,16 +276,91 @@ internal class NativeGuidedSetup(
         body.post { if (!closed) body.findViewWithTag<View>("setup:services:${progress.services?.name ?: SetupServices.FRIGATE.name}")?.requestFocus() }
     }
     private fun renderIntro() {
-        heading.text = "Setup and connection checks"; position.text = "Connect either service, or check what is already ready"
+        heading.text = "Guided setup"; position.text = "Connect either service or pick up where you left off"
         val column = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
         if (progress.services != null && !progress.completed) column.addView(button("Resume setup", "resume") { intro = false; render() })
         column.addView(button("Start guided setup", "start") { progress = SetupProgress(); intro = false; save(); render() })
-        column.addView(button("Check setup", "check-setup") {
-            progress = SetupProgress(services = when { status.frigateSaved && !status.haSaved -> SetupServices.FRIGATE
-                status.haSaved && !status.frigateSaved -> SetupServices.HOME_ASSISTANT; else -> SetupServices.BOTH }, step = SetupStep.CHECKS)
-            intro = false; save(); render(); runChecks()
-        })
         mount(column); next.visibility = View.GONE; later.visibility = View.GONE
+    }
+
+    private fun renderSavedChecks() {
+        val column = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        fun row(key: String) { column.addView(label("", 14f).also { it.tag = "setup:status:$key"; labels[key] = it }) }
+        fun action(key: String, title: String, run: () -> Unit) {
+            column.addView(button(title, key, run).also { buttons[key] = it })
+        }
+        if (progress.services == null) column.addView(label("No connections to check yet", 14f))
+        if (progress.services?.frigate == true) {
+            row("check:frigate")
+            action("repair-frigate", "Manage Frigate") { repairConnection(SetupServices.FRIGATE) }
+        }
+        if (progress.services?.homeAssistant == true) {
+            row("check:ha-signin")
+            action("repair-ha", "Manage Home Assistant") { repairConnection(SetupServices.HOME_ASSISTANT) }
+            row("check:ha-delivery")
+            action("delivery-check", "Listen for a Home Assistant test") {
+                if (actions.beginDeliveryCheck() == null) feedback.text = "Wait for Home Assistant to connect, then try again"
+                refresh()
+            }
+            row("delivery-instructions")
+        }
+        row("check:shared-pause")
+        action("notifications-permission", "Allow Android notifications") { feedback.text = actions.requestNotifications().orEmpty() }
+        action("overlay-permission", "Allow TV pop-ups") { actions.requestPopups() }
+        if (progress.services != null) action("run-checks", "Check again") { runChecks() }
+        action("done", "Done") { handleBack() }
+        mount(ScrollView(activity).apply {
+            addView(column)
+            isFocusable = false
+        })
+        refresh()
+    }
+
+    private fun refreshSavedChecks() {
+        val focused = root.findFocus()
+        fun showRow(key: String, message: String?) {
+            labels[key]?.apply {
+                if (text.toString() != message.orEmpty()) text = message.orEmpty()
+                visibility = if (message == null) View.GONE else View.VISIBLE
+            }
+        }
+        fun showButton(key: String, visible: Boolean) { buttons[key]?.visibility = if (visible) View.VISIBLE else View.GONE }
+        fun result(checked: Boolean?, saved: Boolean): String = when {
+            !saved || checked == false -> "Needs attention"
+            working -> "Checking"
+            checked == true -> "Connection checked"
+            else -> "Saved"
+        }
+        showRow("check:frigate", "Frigate · ${result(checkedFrigate, status.frigateSaved)}")
+        showButton("repair-frigate", checkedFrigate == false || !status.frigateSaved)
+        val haResult = when {
+            !status.haSaved || checkedHa == false -> "Needs attention"
+            working -> "Checking"
+            checkedHa != true -> "Saved"
+            !status.haNotifications -> "Connected · Messages off"
+            !status.homeAssistantChannelAllowed -> "Notifications blocked in Android settings"
+            !status.haConnected -> "Waiting for notifications to connect"
+            else -> "Connected"
+        }
+        showRow("check:ha-signin", "Home Assistant · $haResult")
+        showButton("repair-ha", checkedHa == false || !status.haSaved)
+        val canTestDelivery = status.haConnected && status.haNotifications && status.homeAssistantChannelAllowed &&
+            status.notificationPermission && !status.notificationsPaused && checkedHa != false
+        showButton("delivery-check", canTestDelivery)
+        showRow("check:ha-delivery", status.delivery.takeUnless { it == "Not tested" })
+        showRow("delivery-instructions", status.deliveryInstruction?.takeIf { canTestDelivery }?.let {
+            "Send this message to this TV from Home Assistant\n$it"
+        })
+        showRow("check:shared-pause", status.sharedPause.takeIf { status.notificationsPaused })
+        val receiving = status.frigateAlerts || status.haNotifications
+        showButton("notifications-permission", receiving && (!status.notificationPermission ||
+            (status.haNotifications && !status.homeAssistantChannelAllowed)))
+        showButton("overlay-permission", receiving && status.popups && !status.overlayPermission)
+        buttons["run-checks"]?.let { button ->
+            val title = if (working) "Checking connections" else "Check again"
+            if (button.text.toString() != title) button.text = title
+        }
+        if (focused != null && !focused.isShown) (buttons["run-checks"] ?: buttons["done"])?.requestFocus()
     }
     private fun addChecks(column: LinearLayout) {
         fun row(key: String) { column.addView(label("", 14f).also { it.tag = "setup:status:$key"; labels[key] = it }) }
@@ -267,6 +379,7 @@ internal class NativeGuidedSetup(
         if (checkBinding != status.binding || checkEpoch != status.privacyEpoch) {
             checkBinding = status.binding; checkEpoch = status.privacyEpoch; checkedFrigate = null; checkedHa = null
         }
+        if (checkOnly) { refreshSavedChecks(); return }
         if (!status.overlayPermission || !status.popups) popupShown = false
         if (!intro && progress.step == SetupStep.FRIGATE && renderedFrigateConnected != status.frigateConnected) {
             if (!status.frigateConnected) { frigate?.close(); frigate = null }
@@ -313,7 +426,7 @@ internal class NativeGuidedSetup(
         next.text = if (progress.step == SetupStep.FINISH) { if (progress.finishShowsCameras(status)) "View cameras" else "Done" }
             else if (progress.step == SetupStep.PERMISSIONS && notificationChoicesChanged()) "Apply choices" else "Continue"
         next.isEnabled = !working && currentForm()?.busy != true && (progress.services != null || intro)
-        for ((key, button) in buttons) if (key != "popup-preview") button.isEnabled = !working
+        for ((key, button) in buttons) if (key != "popup-preview") button.isEnabled = !working || key == "run-checks"
         buttons["ha-details"]?.isEnabled = !working && status.haSaved
         buttons["notifications-permission"]?.text = if (status.notificationPermission) "Android notification settings" else "Allow Android notifications"
         buttons["overlay-permission"]?.text = if (status.overlayPermission) "TV pop-up settings" else "Allow TV pop-ups"

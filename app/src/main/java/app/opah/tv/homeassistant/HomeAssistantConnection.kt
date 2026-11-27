@@ -97,6 +97,9 @@ internal class HomeAssistantConnection(
     }
 
     fun hasSession(): Boolean = readSession() != null
+    fun canRegister(): Boolean = runCatching { store.read() == null }.getOrDefault(false) &&
+        mutableState.value.message != HomeAssistantProblem.STORAGE.explanation
+
     fun enabled(): Boolean = readSession()?.enabled == true
     fun showDetails(): Boolean = readSession()?.showDetails == true
     fun beginSetupDeliveryCheck(): String? {

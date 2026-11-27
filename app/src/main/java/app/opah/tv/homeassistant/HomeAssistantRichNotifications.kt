@@ -9,10 +9,16 @@ internal data class HomeAssistantRichPolicy(
     val epoch: Long = -1,
     val disclosure: HomeAssistantDisclosure = HomeAssistantDisclosure.NONE,
     val images: HomeAssistantImageDisclosure = HomeAssistantImageDisclosure.NONE,
-    val actionsProtected: Boolean = false,
-    val actionsUnlocked: Boolean = false,
+    val pinConfigured: Boolean = false,
+    val requirePinForAllActions: Boolean = false,
     val imageAuthority: String? = null,
-)
+) {
+    fun requiresPin(action: HomeAssistantNotificationAction): Boolean =
+        requirePinForAllActions || action.authenticationRequired
+
+    fun canOfferAction(action: HomeAssistantNotificationAction): Boolean =
+        disclosure == HomeAssistantDisclosure.DETAILS && (!requiresPin(action) || pinConfigured)
+}
 
 /** Message labels and camera hints never establish the origin or authority of attached media. */
 internal fun homeAssistantImageUrl(server: String, reference: String): HttpUrl? {

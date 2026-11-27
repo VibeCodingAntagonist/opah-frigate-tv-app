@@ -16,19 +16,24 @@ and direct Frigate alerts continue to use their own connection.
 
 ## Connect your TV
 
-For help with each step, choose **Connections** > **Setup & checks** >
-**Start guided setup**. Choose Home Assistant alone or alongside Frigate.
+For help with each step, open **Settings** > **Connections** and choose
+**Guided setup**. Choose Home Assistant alone or alongside Frigate.
 The guide saves each connection independently and lets you return to unfinished
 steps later. To use the existing connection form directly:
 
-1. Open **Connections** in Opah's side menu and choose **Home Assistant**.
+1. Open **Settings** > **Connections** > **Home Assistant**.
 2. Enter the Home Assistant address you normally use and a recognizable TV
    name, such as **Opah living room TV**.
 3. Choose **Sign in** and sign in on the Home Assistant page. Use your normal
    Home Assistant login and any additional verification it requests.
-4. Choose **Allow TV pop-ups** if shown. In Android's settings, allow Opah to
-   appear over other apps, then return to **Connections** > **Home Assistant**.
-5. Turn **Receive notifications** on and allow Android notifications if asked.
+4. Open **Message settings** and turn on **Receive notifications**. If asked,
+   allow Android notifications and use **TV pop-ups** to let Opah appear over
+   other apps. Return to **Home Assistant messages** to finish.
+
+The first Home Assistant sign-in does not require an Opah PIN. If Connections
+is locked, choose **Set up Home Assistant** on the lock screen. The Settings
+PIN still protects changes after a connection is saved. Guest Mode cannot set
+up or manage connections.
 
 If your TV opens Opah's app settings, allow notifications there and return to
 Opah. In guided setup, use **Apply choices** to enable your selections.
@@ -43,13 +48,13 @@ you do not need the official Home Assistant phone app on the TV.
 
 ## Send a message
 
-Use **Connections** > **Notifications** to pause messages and Frigate alerts
+Use **Settings** > **Notifications** to pause messages and Frigate alerts
 together for 15 minutes or 1 hour. **Resume notifications** ends the pause early
 without turning either service on or changing Frigate's snoozes and schedules.
 Messages received during the pause are not shown later. Your Home Assistant
 connection and automations continue running.
 
-To check delivery, open **Connections** > **Setup & checks** > **Check setup**.
+To check delivery, open **Settings** > **Connections** > **Check setup**.
 Choose **Listen for a Home Assistant test** while notifications are connected.
 Send the exact short message shown using this TV's Mobile App notification
 action. The check waits up to five minutes and reports success only when that
@@ -71,7 +76,7 @@ alerts remain separate, so clearing one does not clear the other.
 ## Pictures and buttons
 
 Pictures and automation buttons start off. Enable each separately in
-**Connections** > **Home Assistant**. **Show message details** must also be on.
+**Settings** > **Notifications** > **Home Assistant messages**. **Show message details** must also be on.
 
 **Show pictures** supports PNG and JPEG images from your configured Home
 Assistant server, using `/media/local/`, `/api/camera_proxy/camera.name`, or
@@ -85,11 +90,15 @@ without a verified camera mapping stays hidden. A camera name in a message
 does not prove which camera the picture contains. Pictures are temporary;
 Opah does not create an image archive.
 
-To enable **Allow automation buttons**, set an Opah PIN and turn on
-**Home Assistant actions** in **Settings** > **Privacy**. Buttons temporarily
-take remote control. Press **Down** to select a button, **Left/Right** to move,
-and **OK** to choose it. **Back** closes the pop-up. The request screen checks
-your PIN authorization before sending.
+Turn on **Allow automation buttons** in **Home Assistant messages**.
+Buttons temporarily take remote control. Press **Down** to select a button,
+**Left/Right** to move, and **OK** to choose it. **Back** closes the pop-up.
+Choose **Send request** to confirm.
+
+Turn on **Require PIN for Home Assistant buttons** in **Settings** > **Privacy** > **Protected areas**
+to ask for your PIN on every press. With that setting off, only buttons with
+`authenticationRequired: true` in the automation ask for a PIN. If you have
+not set an Opah PIN, those buttons stay hidden and ordinary buttons still work.
 
 Opah supports up to three ordinary Home Assistant callback actions. These send
 a `mobile_app_notification_action` event to the registration that delivered
@@ -138,8 +147,8 @@ check Home Assistant before sending a new notification.
 - A notification with a `data.tag` replaces the previous notification with that
   tag. A `clear_notification` message with the same `data.tag` clears it.
 - Turning **Receive notifications** off keeps the saved connection for later.
-- **TV pop-up duration** controls how long a banner stays visible. It is shared
-  with Frigate alerts. **Off** keeps Android notifications without showing a
+- **Display time** under **Settings** > **Notifications** > **TV pop-ups**
+  controls how long a banner stays visible for either service. **Off** keeps Android notifications without showing a
   pop-up banner.
 - **Disconnect** stops messages and removes the saved Home Assistant sign-in
   from the TV. It does not sign out of Frigate. Remove the old Mobile App device
@@ -149,7 +158,7 @@ check Home Assistant before sending a new notification.
 
 ## If messages do not appear
 
-Check that Opah shows **Connected** in **Connections** > **Home Assistant**,
+Check that Opah shows **Connected** in **Settings** > **Connections** > **Home Assistant**,
 that **Receive notifications** is on, and that Android allows Opah notifications
 and TV pop-ups. Confirm that the automation targets the TV you registered.
 

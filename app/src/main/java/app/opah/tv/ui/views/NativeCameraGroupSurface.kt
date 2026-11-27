@@ -56,6 +56,7 @@ internal class NativeCameraGroupSurface(
     private val imageLoadedAtMillis: (String) -> Long? = { null },
     private val livePlayerFactory: LivePlayerFactory = (activity.application as OpahApplication).container.livePlayerFactory,
 ) : FrameLayout(activity) {
+    private val screenAwake = NativePlaybackScreenAwake(activity, this)
     private val players = mutableListOf<LivePlayer>()
     private val jobs = mutableListOf<Job>()
     private val readyCameraNames = linkedSetOf<String>()
@@ -127,6 +128,7 @@ internal class NativeCameraGroupSurface(
 
     fun close() {
         closed = true
+        screenAwake.close()
         chromeHideJob?.cancel()
         chromeHideJob = null
         jobs.forEach(Job::cancel)
@@ -216,6 +218,7 @@ internal class NativeCameraGroupSurface(
 
     private fun tile(index: Int): View {
         val stream = state.streams[index]
+        val awakeStream = screenAwake.openStream()
         val stretched = stream.camera.name in stretchedCameraNames
         return FrameLayout(activity).apply {
             setBackgroundColor(Color.BLACK)
@@ -259,7 +262,12 @@ internal class NativeCameraGroupSurface(
             var rendered = false
             var needsStartStagger = true
             lateinit var startStream: () -> Unit
-            val retry = controlButton("Retry ${stream.camera.displayName}", R.drawable.ic_retry) { startStream() }.apply {
+            val retry = controlButton("Retry ${stream.camera.displayName}", R.drawable.ic_retry) {
+                if (!closed && failed && activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                    screenAwake.explicitAction()
+                    startStream()
+                }
+            }.apply {
                 tag = "group:retry:${stream.camera.name}"
                 visibility = View.GONE
                 maxWidth = activity.dp(340)
@@ -268,6 +276,7 @@ internal class NativeCameraGroupSurface(
             addView(retry, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
             fun reportFailure() {
                 if (closed) return
+                screenAwake.stopStream(awakeStream)
                 failed = true
                 playerView.visibility = View.INVISIBLE
                 readyCameraNames -= stream.camera.name
@@ -285,6 +294,7 @@ internal class NativeCameraGroupSurface(
             }
             startStream = {
                 if (!closed && activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) && (attempt == 0 || failed)) {
+                    screenAwake.awaitPlayer(awakeStream)
                     attempt += 1
                     val thisAttempt = attempt
                     startJob?.cancel()
@@ -352,6 +362,7 @@ internal class NativeCameraGroupSurface(
                                     if (!closed && thisAttempt == attempt) reportFailure()
                                 }
                             })
+                            screenAwake.bindPlayer(awakeStream, livePlayer.player)
                             livePlayer.prepare(stream.uri, LivePlaybackOptions(forceRtpTcp = preferRtpTcp, videoOnly = true))
                         } catch (cancelled: CancellationException) {
                             if (thisAttempt == attempt) playerView.player = null
@@ -387,6 +398,7 @@ internal class NativeCameraGroupSurface(
                             awaitCancellation()
                         } finally {
                             attempt += 1
+                            screenAwake.stopStream(awakeStream)
                             startJob?.cancel()
                             snapshotJob?.cancel()
                             playerView.player = null

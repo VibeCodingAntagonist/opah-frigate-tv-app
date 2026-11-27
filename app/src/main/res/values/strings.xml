@@ -5,7 +5,9 @@
     <string name="app_name">Opah</string>
     <string name="native_frigate_connection">Frigate connection</string>
     <string name="native_connection_privacy_help">Enter the address used to open Frigate • server details stay on this TV</string>
-    <string name="native_unauthenticated_port_warning">Port 5000 connects without an account and gives this TV full Frigate access • use it only on a trusted private network</string>
+    <string name="frigate_connect_without_sign_in_off">Connect without signing in • Off</string>
+    <string name="frigate_connect_without_sign_in_on">Connect without signing in • On</string>
+    <string name="frigate_without_sign_in_warning">Use only on a trusted private network • this connection may give the TV full Frigate access</string>
     <string name="native_playback_starting">Starting video</string>
     <string name="native_playback_start_failed">Video could not be started</string>
     <string name="native_live_start_failed">Live video could not start</string>
@@ -46,7 +48,6 @@
     <string name="native_state_off">Off</string>
     <string name="native_reduce_motion_state">Reduce motion   %1$s</string>
     <string name="native_high_contrast_state">High contrast   %1$s</string>
-    <string name="native_extra_rounding_state">Extra rounding   %1$s</string>
     <string name="native_reduce_transparency_state">Reduce transparency   %1$s</string>
     <string name="ha_action_title">Home Assistant request</string>
     <string name="ha_action_selected">Selected request: %1$s</string>

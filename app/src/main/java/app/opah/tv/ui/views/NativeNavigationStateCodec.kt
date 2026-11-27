@@ -226,7 +226,6 @@ internal object NativeNavigationStateCodec {
         val value = location.canonical()
         putString("destination", value.route.destination.name)
         putString("settings", value.route.settingsPage.name)
-        putString("connection", value.route.connectionPage.name)
         putString("activity", value.activityPage.name)
         putString("clips", value.clipsPage.name)
         putString("server", value.serverPage.name)
@@ -237,18 +236,22 @@ internal object NativeNavigationStateCodec {
             "CAMERAS" -> NativeDestination.HOME
             "REVIEW" -> NativeDestination.ACTIVITY
             "SAVED" -> NativeDestination.CLIPS
-            "INFORMATION", "ABOUT" -> NativeDestination.SETTINGS
+            "CONNECTIONS", "INFORMATION", "ABOUT" -> NativeDestination.SETTINGS
             else -> enumValue<NativeDestination>(name) ?: return null
         }
         val settings = if (destination == NativeDestination.SETTINGS) when (value.id("destination")) {
+            "CONNECTIONS" -> when (value.id("connection")) {
+                "HOME_ASSISTANT" -> SettingsPage.CONNECTION_HOME_ASSISTANT
+                "SETUP" -> SettingsPage.CONNECTION_SETUP
+                "NOTIFICATIONS" -> SettingsPage.TV_ALERTS
+                else -> SettingsPage.CONNECTION_FRIGATE
+            }
             "INFORMATION" -> SettingsPage.SYSTEM
             "ABOUT" -> SettingsPage.ABOUT
             else -> enumValue<SettingsPage>(value.id("settings")) ?: SettingsPage.MAIN
         } else SettingsPage.MAIN
         return NativeLocation(
-            route = NativeRoute(destination, settings,
-                if (destination == NativeDestination.CONNECTIONS) enumValue<NativeConnectionPage>(value.id("connection")) ?: NativeConnectionPage.FRIGATE
-                else NativeConnectionPage.FRIGATE),
+            route = NativeRoute(destination, settings),
             activityPage = enumValue<NativeActivityPage>(value.id("activity")) ?: NativeActivityPage.NEW,
             clipsPage = enumValue<NativeClipsPage>(value.id("clips")) ?: NativeClipsPage.RECORDINGS,
             serverPage = enumValue<NativeServerPage>(value.id("server")) ?: NativeServerPage.PERFORMANCE,

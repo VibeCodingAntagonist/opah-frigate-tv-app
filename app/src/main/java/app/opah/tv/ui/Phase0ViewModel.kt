@@ -777,7 +777,7 @@ class Phase0ViewModel private constructor(
                 _state.update { it.copy(savedProfile = profile) }
 
                 val canRestore = profile != null && (
-                    profile.usesUnauthenticatedFrigatePort || withContext(Dispatchers.IO) {
+                    profile.withoutSignIn || withContext(Dispatchers.IO) {
                         container.cookieJar.hasUnexpiredSession() || sessionManager.hasSavedCredential()
                     }
                 )
@@ -916,8 +916,9 @@ class Phase0ViewModel private constructor(
         password: String,
         rtspHostOverride: String,
         rtspPortText: String,
+        withoutSignIn: Boolean,
     ) {
-        submitConnection(rawUrl, username, password, rtspHostOverride, rtspPortText, testOnly = false)
+        submitConnection(rawUrl, username, password, rtspHostOverride, rtspPortText, withoutSignIn, testOnly = false)
     }
 
     fun testConnection(
@@ -926,8 +927,9 @@ class Phase0ViewModel private constructor(
         password: String,
         rtspHostOverride: String,
         rtspPortText: String,
+        withoutSignIn: Boolean,
     ) {
-        submitConnection(rawUrl, username, password, rtspHostOverride, rtspPortText, testOnly = true)
+        submitConnection(rawUrl, username, password, rtspHostOverride, rtspPortText, withoutSignIn, testOnly = true)
     }
 
     internal fun connect(
@@ -936,8 +938,9 @@ class Phase0ViewModel private constructor(
         password: String,
         rtspHostOverride: String,
         rtspPortText: String,
+        withoutSignIn: Boolean,
         onResult: (Result<String>) -> Unit,
-    ): Job? = submitConnection(rawUrl, username, password, rtspHostOverride, rtspPortText, false, onResult)
+    ): Job? = submitConnection(rawUrl, username, password, rtspHostOverride, rtspPortText, withoutSignIn, false, onResult)
 
     internal fun testConnection(
         rawUrl: String,
@@ -945,8 +948,9 @@ class Phase0ViewModel private constructor(
         password: String,
         rtspHostOverride: String,
         rtspPortText: String,
+        withoutSignIn: Boolean,
         onResult: (Result<String>) -> Unit,
-    ): Job? = submitConnection(rawUrl, username, password, rtspHostOverride, rtspPortText, true, onResult)
+    ): Job? = submitConnection(rawUrl, username, password, rtspHostOverride, rtspPortText, withoutSignIn, true, onResult)
 
     private fun submitConnection(
         rawUrl: String,
@@ -954,6 +958,7 @@ class Phase0ViewModel private constructor(
         password: String,
         rtspHostOverride: String,
         rtspPortText: String,
+        withoutSignIn: Boolean,
         testOnly: Boolean,
         onResult: ((Result<String>) -> Unit)? = null,
     ): Job? {
@@ -970,6 +975,7 @@ class Phase0ViewModel private constructor(
             username = username,
             rtspHostOverride = rtspHostOverride,
             rtspPort = rtspPortText.toIntOrNull() ?: -1,
+            withoutSignIn = withoutSignIn,
         ).getOrElse { error ->
             if (onResult == null) {
                 _state.update { it.copy(errorMessage = error.message ?: "Invalid connection settings") }
@@ -985,11 +991,13 @@ class Phase0ViewModel private constructor(
         return viewModelScope.launch {
             try {
                 val message = if (testOnly) {
-                    val snapshot = sessionManager.testConnection(profile, password) { user ->
-                        repository.discover(profile, user)
+                    val cameraCount = if (profile.withoutSignIn) {
+                        app.opah.tv.setup.FrigateSetupCheck().check(profile, "").allowedCameras.size
+                    } else sessionManager.testConnection(profile, password) { user ->
+                        repository.discover(profile, user).cameras.size
                     }
                     if (!isActive || generation != connectionRequestGeneration) return@launch
-                    val testedMessage = "Connected • ${snapshot.cameras.size} cameras"
+                    val testedMessage = "Connected • $cameraCount cameras"
                     _state.update {
                         it.copy(
                             loading = false,
@@ -1000,7 +1008,8 @@ class Phase0ViewModel private constructor(
                     }
                     testedMessage
                 } else {
-                    val user = sessionManager.signIn(profile, password, canPersist = container::canManageConnectionSetup)
+                    val signInPassword = if (profile.withoutSignIn) "" else password
+                    val user = sessionManager.signIn(profile, signInPassword, canPersist = container::canManageConnectionSetup)
                     val bootstrap = repository.discoverEssential(profile, user)
                     if (!isActive || generation != connectionRequestGeneration) return@launch
                     clearImageCaches()
@@ -1036,19 +1045,20 @@ class Phase0ViewModel private constructor(
         }
     }
 
-    internal fun testSetupConnection(rawUrl: String, username: String, password: String, host: String, port: String,
+    internal fun testSetupConnection(rawUrl: String, username: String, password: String, host: String, port: String, withoutSignIn: Boolean,
         onResult: (Result<String>) -> Unit): Job? {
         if (!container.canManageConnectionSetup()) {
             onResult(Result.failure(IllegalStateException("Unlock settings before checking a connection")))
             return null
         }
-        val profile = ConnectionProfileFactory.create(rawUrl, username, host, port.toIntOrNull() ?: -1).getOrElse {
+        val profile = ConnectionProfileFactory.create(rawUrl, username, host, port.toIntOrNull() ?: -1, withoutSignIn).getOrElse {
             onResult(Result.failure(it)); return null
         }
         return viewModelScope.launch {
             try {
-                app.opah.tv.setup.FrigateSetupCheck().check(profile, password)
-                if (container.canManageConnectionSetup()) onResult(Result.success("Connection checked — choose Sign in to save it"))
+                app.opah.tv.setup.FrigateSetupCheck().check(profile, if (profile.withoutSignIn) "" else password)
+                val saveAction = if (profile.withoutSignIn) "Connect and save" else "Sign in and save"
+                if (container.canManageConnectionSetup()) onResult(Result.success("Connection checked — choose $saveAction"))
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { if (container.canManageConnectionSetup()) onResult(Result.failure(IllegalStateException("Could not connect — check the address and sign-in details"))) }
         }
@@ -1581,6 +1591,9 @@ class Phase0ViewModel private constructor(
     fun setTvAlertOverlayHorizontalPosition(position: TvAlertOverlayHorizontalPosition) =
         updateTvAlertOverlaySettings { it.copy(horizontalPosition = position) }
 
+    fun setTvAlertOverlayPosition(vertical: TvAlertOverlayVerticalPosition, horizontal: TvAlertOverlayHorizontalPosition) =
+        updateTvAlertOverlaySettings { it.copy(verticalPosition = vertical, horizontalPosition = horizontal) }
+
     fun setTvAlertOverlayImageSize(size: TvAlertOverlayImageSize) =
         updateTvAlertOverlaySettings { it.copy(imageSize = size) }
 
@@ -1706,10 +1719,10 @@ class Phase0ViewModel private constructor(
         val profile = current.activeProfile ?: return null
         if (BuildConfig.DOCUMENTATION_MODE ||
             !app.opah.tv.playback.supportsAuthorizedHttpsLive(snapshot.frigateVersion) ||
-            !app.opah.tv.playback.canOfferHttpLive(profile.apiBaseUrl)
+            !app.opah.tv.playback.canOfferHttpLive(profile.apiBaseUrl, profile.withoutSignIn)
         ) return null
         if (app.opah.tv.playback.isLocalHttpLiveBase(profile.apiBaseUrl) &&
-            (current.savedProfile != profile || profile.username != "anonymous" || snapshot.user.username != "anonymous")
+            (current.savedProfile != profile || snapshot.user.username != "anonymous")
         ) return null
         val camera = snapshot.cameras.firstOrNull {
             it.name == cameraName && it.name in snapshot.user.allowedCameras
@@ -1748,7 +1761,7 @@ class Phase0ViewModel private constructor(
         } else _state.value.playback?.httpsLiveRequestId == request.httpsLiveRequestId && request.httpsLiveRequestId != null
         if (!currentRequestMatches() || (automaticRequestId != null && !automaticLiveRecoveryEnabled())) return null
         val profile = current.activeProfile ?: return null
-        if (!app.opah.tv.playback.useAuthenticatedLive(request, profile.apiBaseUrl)) return null
+        if (!app.opah.tv.playback.useAuthenticatedLive(request, profile.apiBaseUrl, profile.withoutSignIn)) return null
         val snapshot = current.snapshot ?: return null
         val camera = snapshot.cameras.firstOrNull { it.name == request.cameraName } ?: return null
         val streamName = request.liveStreamName ?: return null
@@ -1768,16 +1781,19 @@ class Phase0ViewModel private constructor(
             val lease = app.opah.tv.playback.HttpsAccessLease(localAllowed = {
                 val latest = _state.value
                 latest.activeProfile == profile && currentRequestMatches() &&
-                    (if (local != null) local.isCurrent() && latest.savedProfile == profile
+                    (if (profile.withoutSignIn) latest.savedProfile == profile && local?.isCurrent() != false
                         else container.cookieJar.hasUnexpiredSession()) &&
                     revalidatePrivacyGrant(grant) && latest.snapshot?.user == snapshot.user &&
                     latest.snapshot?.cameras?.any { it.name == camera.name && it.streams.any { source -> source.streamName == stream.streamName } } == true
             }, fetchFreshScope = {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                     // Local discovery and media share one pinned, credential-free network context.
-                    val client = local?.client ?: container.httpClient.newBuilder().callTimeout(2, java.util.concurrent.TimeUnit.SECONDS).build()
+                    val client = local?.client ?: container.httpClient.newBuilder()
+                        .callTimeout(2, java.util.concurrent.TimeUnit.SECONDS)
+                        .apply { if (profile.withoutSignIn) cookieJar(okhttp3.CookieJar.NO_COOKIES) }
+                        .build()
                     val gateway = app.opah.tv.data.network.FrigateApiClient(client,
-                        if (local != null) app.opah.tv.playback.AnonymousLiveSessionCookies else container.cookieJar)
+                        if (profile.withoutSignIn) app.opah.tv.playback.AnonymousLiveSessionCookies else container.cookieJar)
                     val scopeProfile = if (local != null) profile.copy(apiBaseUrl = local.scopeBaseUrl) else profile
                     try {
                         val user = gateway.refreshSession(scopeProfile)
@@ -1810,7 +1826,7 @@ class Phase0ViewModel private constructor(
             }, elapsedMillis = SystemClock::elapsedRealtime)
             if (!lease.refresh()) return null
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            val live = app.opah.tv.playback.AuthenticatedHttpLive(uri, lease::allowed, lease::refresh, local)
+            val live = app.opah.tv.playback.AuthenticatedHttpLive(uri, lease::allowed, lease::refresh, local, profile.withoutSignIn)
             handedOff = true
             return live
         } finally {
@@ -3680,6 +3696,7 @@ class Phase0ViewModel private constructor(
             username = profile.username,
             rtspHostOverride = hostOverride,
             rtspPortText = portText,
+            withoutSignIn = profile.withoutSignIn,
         ) ?: return
         viewModelScope.launch {
             profileRepository.save(updated)
@@ -5933,7 +5950,7 @@ class Phase0ViewModel private constructor(
             return
         }
         viewModelScope.launch {
-            if (!profile.usesUnauthenticatedFrigatePort && !sessionManager.hasSavedCredential()) {
+            if (!profile.withoutSignIn && !sessionManager.hasSavedCredential()) {
                 finishSignedOut(message)
             } else {
                 loadSavedSession(profile, "Reconnecting…")
@@ -6867,12 +6884,14 @@ class Phase0ViewModel private constructor(
         username: String,
         rtspHostOverride: String,
         rtspPortText: String,
+        withoutSignIn: Boolean,
     ): ConnectionProfile? {
         val profileResult = ConnectionProfileFactory.create(
             rawApiBaseUrl = rawUrl,
             username = username,
             rtspHostOverride = rtspHostOverride,
             rtspPort = rtspPortText.toIntOrNull() ?: -1,
+            withoutSignIn = withoutSignIn,
         )
         return profileResult.getOrElse { error ->
             _state.update { it.copy(errorMessage = error.message ?: "Invalid connection settings") }

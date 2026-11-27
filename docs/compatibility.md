@@ -55,8 +55,8 @@ Codec.
 
 If a camera stays on **Preparing** or does not start:
 
-1. Open **Settings** > **Cameras and Playback** > **Check camera compatibility**,
-   choose the camera, and start with **Automatic**.
+1. Open **Settings** > **Cameras & playback** > **Troubleshoot playback**.
+   Choose **Check camera compatibility**, pick the camera, and start with **Automatic**.
 2. If Automatic cannot verify a choice, try **Reliable video only** to separate
    an audio problem from a video problem.
 3. Try the camera's lower-resolution stream.
@@ -97,12 +97,10 @@ and prereleases.
 
 The recommended connection is authenticated `https://`, with a certificate and
 address the TV can verify. A reverse proxy must also pass Frigate's live-video
-WebSocket connection. An existing no-login connection on a trusted private
-network can use the other connection on HTTP port `5000`. This local path is
-unencrypted and does not use account camera restrictions. Opah checks that its
-destination stays private; an address ending in `.local` alone is not enough.
-Do not expose port `5000` to the internet or switch to it to avoid a sign-in or
-certificate error.
+WebSocket connection. Anonymous Frigate connections on a trusted private
+network can use the local HTTP option on port `5000` or a custom port. This
+path is unencrypted. Opah checks that the destination stays private, even
+when the address ends in `.local`.
 
 1. On **Cameras**, hold **OK** on a camera tile.
 2. Choose **Play using another connection** when it is available.
@@ -131,8 +129,8 @@ Local PIN and private-camera rules apply to both connection types.
 
 ### Optional automatic recovery
 
-Open **Settings** > **Cameras and Playback** and enable **Try another connection
-automatically** if you want this behavior for your saved server. It is off by
+Open **Settings** > **Cameras & playback** > **Troubleshoot playback** and turn on
+**Try another connection automatically** for your saved server. It is off by
 default and resets when you change the saved server connection.
 
 When a camera leaves out required video setup details, Opah tries the same
@@ -228,7 +226,7 @@ physical PTZ camera, so support may vary.
 TV alerts require Android notification permission on Android 13 or newer. A
 notification channel can also be turned off separately in Android settings.
 Some TVs delay background work or reboot delivery even when alerts are enabled.
-Open **Settings** > **TV alerts** to see Opah's current status.
+Open **Settings** > **Notifications** > **TV pop-ups** to check notification delivery.
 
 Start **Monitor** from Cameras, a saved view, or a Frigate camera group. It uses
 snapshots for the quiet baseline and brings at most one camera to live video
@@ -276,11 +274,11 @@ local live-video address are different.
 Use `https://` for the Frigate server address when possible. Keep the live-video
 service inside a trusted local network rather than exposing it to the internet.
 
-Opah can also connect directly to Frigate port `5000` without a username or
-password. Frigate treats this as anonymous administrator access, so use it only
-when the TV and server share a trusted private network. Do not expose port
-`5000` to the internet. The authenticated Frigate address remains the
-recommended choice for most installations.
+**Connect without signing in** supports existing private addresses that work
+without a Frigate login, including a reverse proxy on a custom port. Direct
+connections to Frigate's internal port `5000` use this mode automatically.
+Frigate treats direct access to its internal port as administrator access.
+Keep that service private and use the sign-in address for most installations.
 
 ## Report a compatibility problem
 

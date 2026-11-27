@@ -80,16 +80,31 @@ internal enum class SettingsPage(
     MAIN("Settings", ""),
     UPDATE("Update", "See whether a newer version of Opah is ready"),
     APPEARANCE("Appearance", "Choose how Opah looks"),
+    APPEARANCE_CUSTOM("Customize theme", "Choose a palette or adjust colors"),
     PLAYBACK("Cameras and Playback", "Choose how cameras and video start and play"),
+    PLAYBACK_TROUBLESHOOT("Troubleshoot playback", "Check cameras and adjust playback connections"),
     PLAYBACK_TEST("Check camera compatibility", "Find a reliable way to play each camera on this TV"),
     CAMERA_DIAGNOSTICS("Diagnostic data", "Technical camera and playback details"),
     TV_ALERTS("TV alerts", "See important activity while another TV app is open"),
     PRIVACY("Privacy", "Protect selected cameras and app areas with a PIN"),
+    PRIVACY_PIN("Manage PIN", "Lock protected areas or remove the PIN"),
+    PRIVACY_AREAS("Protected areas", "Choose when Opah asks for a PIN"),
+    PRIVACY_CAMERAS("Private cameras", "Choose which cameras to hide when locked"),
     STARTUP("Startup", "Choose what Opah opens first"),
     CONNECTION("Connection", "Manage this device's connection"),
+    CONNECTION_FRIGATE("Frigate", "Manage the connection to your cameras"),
+    CONNECTION_FRIGATE_ADVANCED("Live video route", "Change where this TV gets live video"),
+    CONNECTION_HOME_ASSISTANT("Home Assistant", "Manage this TV's sign-in"),
+    CONNECTION_SETUP("Guided setup", "Connect a service and choose what it can show"),
+    CONNECTION_CHECK("Check setup", "Check your saved connections"),
+    NOTIFICATION_FRIGATE("Frigate alerts", "Choose when camera activity appears"),
+    NOTIFICATION_FRIGATE_RULES("Customize Frigate alerts", "Choose cameras, quiet times, and previews"),
+    NOTIFICATION_HOME_ASSISTANT("Home Assistant messages", "Choose what messages can show"),
+    NOTIFICATION_POPUPS("TV pop-ups", "Choose how notifications appear over other apps"),
     SYSTEM("Server", "See server performance and recording space"),
     ADVANCED("Device Info", "See TV and decoder details for troubleshooting"),
     ABOUT("About Opah", "Project, privacy, and legal information"),
+    ABOUT_PROJECT("Project information", "Privacy, credits, and legal information"),
 }
 
 internal val SETTINGS_PAGE_ORDER = listOf(
@@ -175,6 +190,21 @@ private fun settingsPageValue(
     SettingsPage.MAIN,
     SettingsPage.PLAYBACK_TEST,
     SettingsPage.CAMERA_DIAGNOSTICS,
+    SettingsPage.PLAYBACK_TROUBLESHOOT,
+    SettingsPage.APPEARANCE_CUSTOM,
+    SettingsPage.PRIVACY_PIN,
+    SettingsPage.PRIVACY_AREAS,
+    SettingsPage.PRIVACY_CAMERAS,
+    SettingsPage.ABOUT_PROJECT,
+    SettingsPage.CONNECTION_FRIGATE,
+    SettingsPage.CONNECTION_FRIGATE_ADVANCED,
+    SettingsPage.CONNECTION_HOME_ASSISTANT,
+    SettingsPage.CONNECTION_SETUP,
+    SettingsPage.CONNECTION_CHECK,
+    SettingsPage.NOTIFICATION_FRIGATE,
+    SettingsPage.NOTIFICATION_FRIGATE_RULES,
+    SettingsPage.NOTIFICATION_HOME_ASSISTANT,
+    SettingsPage.NOTIFICATION_POPUPS,
     -> null
 }
 
@@ -1456,7 +1486,7 @@ private fun pinScopeLabel(scope: PinScope): String = when (scope) {
     PinScope.CLIPS_AND_INCIDENTS -> "Clips and Incidents"
     PinScope.ACTIVITY_HISTORY_SEARCH -> "Activity, History, and Search"
     PinScope.PRIVATE_CAMERAS -> "Private cameras"
-    PinScope.HOME_ASSISTANT_ACTIONS -> "Home Assistant actions"
+    PinScope.HOME_ASSISTANT_ACTIONS -> "Require PIN for Home Assistant buttons"
     PinScope.EXIT_GUEST_MODE -> "Legacy protection"
 }
 

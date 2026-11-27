@@ -28,6 +28,7 @@ internal data class NativeSettingsUiState(
     val detailTabs: List<NativeBrowserTab> = emptyList(),
     val preferredDetailFocusKey: String? = null,
     val detailContent: View? = null,
+    val detailLocationKey: String? = null,
 )
 
 /** View-only bookmarks. No settings values, private content, or action drafts are retained. */
@@ -186,7 +187,7 @@ internal class NativeSettingsSurface(
 
     fun update(state: NativeSettingsUiState) {
         val generation = ++updateGeneration
-        val nextLocation = "${state.selectedCategoryKey}:${state.detailTabs.firstOrNull { it.selected }?.key.orEmpty()}"
+        val nextLocation = "${state.detailLocationKey ?: state.selectedCategoryKey}:${state.detailTabs.firstOrNull { it.selected }?.key.orEmpty()}"
         val changedLocation = locationKey != nextLocation
         if (changedLocation) locationKey?.let {
             val position = capturePosition()
@@ -206,7 +207,7 @@ internal class NativeSettingsSurface(
         val focusedDetailKey =
             restore?.focusedKey?.takeIf { restore.focusInDetails }
                 ?: (detailList.findFocus()?.tag as? String).takeUnless { changedLocation }
-                ?: state.preferredDetailFocusKey?.takeIf { firstUpdate && it !in state.categories.map(NativeRowModel::key) }?.takeIf { key ->
+                ?: state.preferredDetailFocusKey?.takeIf { (firstUpdate || changedLocation) && it !in state.categories.map(NativeRowModel::key) }?.takeIf { key ->
                     state.detailRows.any { it.key == key && detailAdapter.isFocusableRow(it) }
                 }
         if (focusedDetailKey != null) {
@@ -235,15 +236,18 @@ internal class NativeSettingsSurface(
         if (state.detailContent != null) {
             detailUpdatePending = false
             detailAdapter.submitList(emptyList())
-            if (firstUpdate) {
+            if (firstUpdate || (changedLocation && hadDetailFocus)) {
+                val initializing = firstUpdate
                 firstUpdate = false
                 val preferredDetail = (restore?.focusedKey ?: state.preferredDetailFocusKey)?.let { key ->
                     state.detailContent.findViewWithTag<View>(key)
-                }
+                }?.takeIf { it.isFocusable && it.isEnabled && it.isShown }
                 if (preferredDetail != null) {
                     preferredDetail.post { preferredDetail.requestFocus() }
-                } else {
+                } else if (initializing) {
                     requestInitialCategoryFocus(state, generation)
+                } else {
+                    focusFirstDetailTarget()
                 }
             }
             enterActivatedCategoryWhenReady(generation)
@@ -255,7 +259,9 @@ internal class NativeSettingsSurface(
             detailUpdatePending = false
             restore?.detailScroll?.let { detailList.layoutManager?.onRestoreInstanceState(it) }
             if (focusedDetailKey != null && (hadDetailFocus || firstUpdate || restore?.focusInDetails == true)) {
-                restoreDetailFocus(focusedDetailKey, generation, explicit = firstUpdate && restore?.focusInDetails == true)
+                restoreDetailFocus(focusedDetailKey, generation, explicit = (firstUpdate || changedLocation) && restore?.focusInDetails == true)
+            } else if (changedLocation && hadDetailFocus) {
+                focusFirstDetailTarget()
             } else if (hadDetailFocus && !changedLocation && focusedBefore != null && !detailList.hasFocus()) {
                 // A row can disappear after an authorization or capability update.
                 focusFirstDetailAction()

@@ -4,7 +4,7 @@ import app.opah.tv.data.model.ConnectionProfile
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 object ConnectionProfileFactory {
-    fun targetsUnauthenticatedFrigatePort(rawApiBaseUrl: String): Boolean {
+    fun targetsDefaultInternalPort(rawApiBaseUrl: String): Boolean {
         val input = rawApiBaseUrl.trim()
         if (input.isBlank()) return false
         val candidate = if ("://" in input) input else "http://$input"
@@ -16,6 +16,7 @@ object ConnectionProfileFactory {
         username: String,
         rtspHostOverride: String? = null,
         rtspPort: Int = 8554,
+        withoutSignIn: Boolean = false,
     ): Result<ConnectionProfile> = runCatching {
         require(rtspPort in 1..65535) { "RTSP port must be between 1 and 65535." }
 
@@ -23,7 +24,7 @@ object ConnectionProfileFactory {
             require(input.isNotBlank()) { "Frigate URL is required." }
             when {
                 "://" in input -> input
-                targetsUnauthenticatedFrigatePort(input) -> "http://$input"
+                targetsDefaultInternalPort(input) -> "http://$input"
                 else -> "https://$input"
             }
         }
@@ -35,9 +36,9 @@ object ConnectionProfileFactory {
         require(parsed.username.isEmpty() && parsed.password.isEmpty()) {
             "Do not embed credentials in the Frigate URL."
         }
-        val unauthenticated = parsed.port == 5000
-        require(username.isNotBlank() || unauthenticated) {
-            "Username is required unless you connect directly to Frigate port 5000."
+        val noSignIn = parsed.port == 5000 || withoutSignIn
+        require(username.isNotBlank() || noSignIn) {
+            "Enter your Frigate username or choose Connect without signing in."
         }
 
         val normalizedPath = parsed.encodedPath
@@ -60,9 +61,10 @@ object ConnectionProfileFactory {
 
         ConnectionProfile(
             apiBaseUrl = normalized,
-            username = if (unauthenticated) "anonymous" else username.trim(),
+            username = if (noSignIn) "anonymous" else username.trim(),
             rtspHostOverride = hostOverride,
             rtspPort = rtspPort,
+            withoutSignIn = noSignIn,
         )
     }
 }

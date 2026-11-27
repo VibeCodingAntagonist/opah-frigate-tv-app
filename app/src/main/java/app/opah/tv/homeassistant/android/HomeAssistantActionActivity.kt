@@ -17,7 +17,6 @@ import androidx.activity.OnBackPressedCallback
 import androidx.lifecycle.lifecycleScope
 import app.opah.tv.OpahApplication
 import app.opah.tv.R
-import app.opah.tv.privacy.PinUnlockResult
 import app.opah.tv.ui.pinPadDisplay
 import app.opah.tv.ui.views.NativeTheme
 import app.opah.tv.ui.views.nativeGlassPanelBackground
@@ -119,22 +118,28 @@ internal class HomeAssistantActionActivity : ComponentActivity() {
         send.isEnabled = false
         lifecycleScope.launch {
             try {
-                if (platform.actionStatus(token) == HomeAssistantActionResult.NEEDS_PIN) {
+                val supplied = if (platform.actionStatus(token) == HomeAssistantActionResult.NEEDS_PIN) {
                     if (entered.length < 4) {
                         keypad.visibility = ViewGroup.VISIBLE; pin.visibility = ViewGroup.VISIBLE
                         status.setText(R.string.ha_action_pin); keypad.getChildAt(0).requestFocus()
                         return@launch
                     }
-                    val supplied = entered.toString().toCharArray()
+                    val digits = entered.toString().toCharArray()
                     entered.setLength(0)
                     pin.setText(R.string.ha_action_pin_empty)
-                    if (container.pinCredentialService.verify(supplied) !is PinUnlockResult.Unlocked) {
-                        status.setText(R.string.ha_action_pin_failed)
-                        return@launch
-                    }
-                }
+                    digits
+                } else null
                 status.setText(R.string.ha_action_sending)
-                complete(platform.executeAction(token))
+                when (val result = platform.executeAction(token, supplied)) {
+                    HomeAssistantActionResult.PIN_REJECTED -> status.setText(R.string.ha_action_pin_failed)
+                    HomeAssistantActionResult.NEEDS_PIN -> {
+                        pin.visibility = TextView.VISIBLE
+                        keypad.visibility = ViewGroup.VISIBLE
+                        status.setText(R.string.ha_action_pin)
+                        keypad.getChildAt(0).requestFocus()
+                    }
+                    else -> complete(result)
+                }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { complete(HomeAssistantActionResult.UNCERTAIN) }
             finally { busy = false; send.isEnabled = platform.actionStatus(token) == HomeAssistantActionResult.READY || entered.length >= 4 }

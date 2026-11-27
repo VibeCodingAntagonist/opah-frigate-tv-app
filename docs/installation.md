@@ -42,7 +42,7 @@ The exact wording and location of these options varies by television.
 
 ## Choose your connections
 
-Open **Connections** > **Setup & checks** > **Start guided setup**. Choose
+Open **Settings** > **Connections** > **Guided setup**. Choose
 Frigate, Home Assistant, or both. Either service can go first, and you can
 return to unfinished steps later. Review notification and privacy choices,
 then use **Apply choices** when you are ready to enable them.
@@ -67,19 +67,19 @@ The form stays open if a detail needs correcting, so you can fix it without
 entering everything again. After the first successful sign-in, Opah can remember the
 connection and sign in automatically.
 
-Advanced setups that intentionally use Frigate's internal service on a
-trusted private network can enter a port `5000` address, such as
-`http://frigate.local:5000`. Leave the username and password blank. This option
-does not use an account or its camera restrictions and gives the TV full
-Frigate access. Use the authenticated address for ordinary TV connections.
-Never expose port `5000` to the internet.
+If your Frigate address already works without a login on a trusted private
+network, enter the full address, including `http://` or `https://`. Turn on
+**Connect without signing in**, then choose **Check connection** and
+**Connect and save**. This also works with a reverse proxy on a custom port.
+Port `5000` selects this mode automatically. Only use this mode on a trusted
+private network because it may give the TV full access to Frigate.
 
 ## Get started with the remote
 
 After connecting to Frigate, **Cameras** shows your camera previews. Move to a
 camera and press **OK** to watch it live. Hold **OK** for that camera's options.
 Move left from the edge of the grid to open the side navigation and choose
-**Activity**, **Clips**, **Connections**, or **Settings**.
+**Activity**, **Clips**, or **Settings**.
 
 Press Back to close a dialog or return to the previous screen. In camera views
 and playback, Back hides visible controls first. Press Back while the controls
@@ -93,8 +93,8 @@ stable 0.18 release. In this view, **Back** leaves immediately, closing an open
 choice dialog first; **Home** stops the connection.
 
 To make this automatic for supported camera setup problems, open **Settings**
-> **Cameras and Playback** > **Try another connection automatically**. It starts
-off. See the [compatibility guide](compatibility.md#another-live-connection)
+> **Cameras & playback** > **Troubleshoot playback** and turn on **Try another
+connection automatically**. It starts off. See the [compatibility guide](compatibility.md#another-live-connection)
 for the supported secure and trusted-local connections and their limits.
 
 Choose **New view** on Cameras to save two to four cameras together. In
@@ -103,23 +103,22 @@ Choose **New view** on Cameras to save two to four cameras together. In
 
 ## Optional TV alerts
 
-TV alerts are off until you enable them in **Settings** > **TV alerts**. On
+TV alerts are off until you enable them in **Settings** > **Notifications** > **Frigate alerts**. On
 Android 13 or newer, Android asks for notification permission when you turn
 them on. If you decline, Opah continues to work normally without TV alerts.
 
-Some TVs restrict apps in the background or after a reboot. The TV alerts page
-shows when Android has blocked notifications and includes a shortcut to the
-app's notification settings. Android may still delay restarting alerts until
-you open Opah again.
+Some TVs restrict apps in the background or after a reboot. Open **Settings** >
+**Notifications** > **TV pop-ups** to check permissions. Android may still
+delay restarting alerts until you open Opah again.
 
 ## Update Opah
 
 When Opah finds a newer release, a small dot appears inside the Settings gear.
-Open **Settings** > **Update** to:
+Open **Settings** > **About & updates** to:
 
 1. read what is new;
 2. choose **Download update**; and
-3. choose **Install now** after the download is checked.
+3. choose **Install update** after the download is checked.
 
 Android may ask you to let Opah open installation files. This permission lets
 Android show its normal installer; Opah still cannot install anything without

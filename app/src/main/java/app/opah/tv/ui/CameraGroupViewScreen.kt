@@ -64,6 +64,8 @@ import app.opah.tv.R
 import app.opah.tv.pipAspectRatio
 import app.opah.tv.playback.LivePlaybackOptions
 import app.opah.tv.playback.LivePlayer
+import app.opah.tv.playback.LivePlayerFactory
+import app.opah.tv.ui.views.NativePlaybackScreenAwake
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
@@ -101,6 +103,7 @@ internal fun CameraGroupViewScreen(
     onBack: () -> Unit,
     cachedBitmap: (String) -> Bitmap?,
     refreshBitmap: suspend (String, Int) -> Bitmap?,
+    livePlayerFactory: LivePlayerFactory? = null,
 ) {
     val streamKey = state.streams.joinToString("|") { it.camera.name }
     val playerFocusRequester = remember(streamKey) { FocusRequester() }
@@ -193,8 +196,11 @@ internal fun CameraGroupViewScreen(
                     )
                 },
         ) {
+            val screenAwake = if (BuildConfig.DOCUMENTATION_MODE) null else rememberPlaybackAwakeHost(streamKey)
             CameraGroupGrid(
                 streams = state.streams,
+                screenAwake = screenAwake,
+                livePlayerFactory = livePlayerFactory,
                 preferRtpTcp = preferRtpTcp,
                 stretchedCameraNames = stretchedCameraNames,
                 showLabels = overlayVisible && !pictureInPictureActive,
@@ -283,6 +289,8 @@ internal fun CameraGroupViewScreen(
 @Composable
 private fun CameraGroupGrid(
     streams: List<CameraGroupStream>,
+    screenAwake: NativePlaybackScreenAwake?,
+    livePlayerFactory: LivePlayerFactory?,
     preferRtpTcp: Boolean,
     stretchedCameraNames: Set<String>,
     showLabels: Boolean,
@@ -295,6 +303,8 @@ private fun CameraGroupGrid(
         val stream = streams[index]
         CameraGroupTile(
             stream = stream,
+            screenAwake = screenAwake,
+            livePlayerFactory = livePlayerFactory,
             index = index,
             preferRtpTcp = preferRtpTcp,
             stretched = stream.camera.name in stretchedCameraNames,
@@ -336,6 +346,8 @@ private fun CameraGroupGrid(
 @Composable
 private fun CameraGroupTile(
     stream: CameraGroupStream,
+    screenAwake: NativePlaybackScreenAwake?,
+    livePlayerFactory: LivePlayerFactory?,
     index: Int,
     preferRtpTcp: Boolean,
     stretched: Boolean,
@@ -360,6 +372,8 @@ private fun CameraGroupTile(
             } else {
                 CameraGroupLiveVideo(
                     uri = stream.uri,
+                    screenAwake = screenAwake,
+                    livePlayerFactory = livePlayerFactory,
                     preferRtpTcp = preferRtpTcp,
                     stretched = stretched,
                     startDelayMillis = index * NEXT_PLAYER_START_DELAY_MS,
@@ -455,13 +469,15 @@ private fun CameraGroupMonitorControl(
 @Composable
 private fun CameraGroupLiveVideo(
     uri: String,
+    screenAwake: NativePlaybackScreenAwake?,
+    livePlayerFactory: LivePlayerFactory?,
     preferRtpTcp: Boolean,
     stretched: Boolean,
     startDelayMillis: Int,
     onReady: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
-    val application = context.applicationContext as OpahApplication
+    val playerFactory = livePlayerFactory ?: (context.applicationContext as OpahApplication).container.livePlayerFactory
     val lifecycleOwner = LocalLifecycleOwner.current
     var lifecycleStarted by remember(lifecycleOwner) {
         mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
@@ -486,12 +502,12 @@ private fun CameraGroupLiveVideo(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    LaunchedEffect(uri, preferRtpTcp, lifecycleStarted, lifecycleGeneration) {
+    LaunchedEffect(uri, preferRtpTcp, lifecycleStarted, lifecycleGeneration, playerFactory) {
         if (!lifecycleStarted) return@LaunchedEffect
         var created: LivePlayer? = null
         try {
             if (startDelayMillis > 0) delay(startDelayMillis.toLong())
-            created = application.container.livePlayerFactory.create(
+            created = playerFactory.create(
                 context,
                 preferSoftwareVideoDecoder = false,
             )
@@ -538,6 +554,7 @@ private fun CameraGroupLiveVideo(
             .background(Color.Black),
         contentAlignment = Alignment.Center,
     ) {
+        PlaybackAwakeStream(screenAwake, livePlayer?.player)
         livePlayer?.let { activePlayer ->
             AndroidView(
                 factory = { viewContext ->
@@ -547,7 +564,6 @@ private fun CameraGroupLiveVideo(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                         )
                         useController = false
-                        keepScreenOn = true
                         isFocusable = false
                         descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
                         resizeMode = videoResizeMode(stretched)

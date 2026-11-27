@@ -106,7 +106,13 @@ internal class PinCredentialService(
         }
     }
 
-    suspend fun verify(pin: CharArray): PinUnlockResult = withContext(storageDispatcher) {
+    suspend fun verify(pin: CharArray): PinUnlockResult = verify(pin, unlockSession = true)
+
+    /** Validate a PIN for one request without unlocking other protected areas. */
+    suspend fun verifyForSingleAction(pin: CharArray): Long? =
+        (verify(pin, unlockSession = false) as? PinUnlockResult.Unlocked)?.proof?.privacyEpoch
+
+    private suspend fun verify(pin: CharArray, unlockSession: Boolean): PinUnlockResult = withContext(storageDispatcher) {
         privacyRepository.initialize()
         transactionMutex.withLock {
             try {
@@ -157,6 +163,7 @@ internal class PinCredentialService(
                         upgradedRecord = verification.upgradedRecord,
                         nowWallClockMillis = nowWall,
                         nowMonotonicMillis = nowMonotonic,
+                        unlockSession = unlockSession,
                     )
                     PinVerificationOutcome.CorruptRecord -> PinUnlockResult.CorruptRecord
                     PinVerificationOutcome.KdfUnavailable -> PinUnlockResult.Unavailable
@@ -241,6 +248,7 @@ internal class PinCredentialService(
         upgradedRecord: PinVerifierRecord?,
         nowWallClockMillis: Long,
         nowMonotonicMillis: Long,
+        unlockSession: Boolean,
     ): PinUnlockResult {
         val clearedAttempts = rateLimiter.recordSuccess()
         var recordForGrant = snapshot.verifierRecord
@@ -272,6 +280,7 @@ internal class PinCredentialService(
         }
         val repositoryState = privacyRepository.state.value as? PrivacyRepositoryState.Ready
             ?: return PinUnlockResult.Unavailable
+        if (!unlockSession) return PinUnlockResult.Unlocked(PinUnlockProof(repositoryState.policy.epoch, emptySet()))
         val proof = unlockSessions.unlock(
             privacyEpoch = repositoryState.policy.epoch,
             scopes = recordForGrant.protectedScopes,
